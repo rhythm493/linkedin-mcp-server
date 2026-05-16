@@ -40,11 +40,11 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/stickerdaniel/linkedin-mcp-server"
-Documentation = "https://github.com/stickerdaniel/linkedin-mcp-server#readme"
-Repository = "https://github.com/stickerdaniel/linkedin-mcp-server"
-Issues = "https://github.com/stickerdaniel/linkedin-mcp-server/issues"
-Changelog = "https://github.com/stickerdaniel/linkedin-mcp-server/releases"
+Homepage = "https://github.com/rhythm493/linkedin-mcp-server"
+Documentation = "https://github.com/rhythm493/linkedin-mcp-server#readme"
+Repository = "https://github.com/rhythm493/linkedin-mcp-server"
+Issues = "https://github.com/rhythm493/linkedin-mcp-server/issues"
+Changelog = "https://github.com/rhythm493/linkedin-mcp-server/releases"
 
 [project.scripts]
 linkedin-mcp-server = "linkedin_mcp_server.cli_main:main"

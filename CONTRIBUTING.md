@@ -1,13 +1,13 @@
 # Contributing
 
-Contributions are welcome! Please [open an issue](https://github.com/stickerdaniel/linkedin-mcp-server/issues) first to discuss the feature or bug fix before submitting a PR.
+Contributions are welcome! Please [open an issue](https://github.com/rhythm493/linkedin-mcp-server/issues) first to discuss the feature or bug fix before submitting a PR.
 
 ## Development Setup
 
 See the [README](README.md#-local-setup-develop--contribute) for full setup instructions.
 
 ```bash
-git clone https://github.com/stickerdaniel/linkedin-mcp-server
+git clone https://github.com/rhythm493/linkedin-mcp-server
 cd linkedin-mcp-server
 uv sync                                    # Install dependencies
 uv sync --group dev                        # Install dev dependencies
@@ -122,7 +122,7 @@ When adding an entirely new MCP tool (e.g., `search_companies`):
 
 ## Workflow
 
-1. [Open an issue](https://github.com/stickerdaniel/linkedin-mcp-server/issues) using the correct GitHub issue template. Fill in every section; delete optional sections if not applicable.
+1. [Open an issue](https://github.com/rhythm493/linkedin-mcp-server/issues) using the correct GitHub issue template. Fill in every section; delete optional sections if not applicable.
 2. Create a branch: `feature/<issue-number>-<short-description>` or `fix/<issue-number>-<short-description>`
 3. Implement, test, and update docs (see checklists above)
 4. Open a PR — AI agents review first, then manual review

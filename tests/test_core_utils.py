@@ -24,12 +24,12 @@ def mock_page():
 class TestDetectRateLimit:
     async def test_checkpoint_url_raises(self, mock_page):
         mock_page.url = "https://www.linkedin.com/checkpoint/challenge/123"
-        with pytest.raises(RateLimitError, match="security checkpoint"):
+        with pytest.raises(RateLimitError, match="LinkedIn security challenge"):
             await detect_rate_limit(mock_page)
 
     async def test_authwall_url_raises(self, mock_page):
         mock_page.url = "https://www.linkedin.com/authwall?trk=login"
-        with pytest.raises(RateLimitError, match="security checkpoint"):
+        with pytest.raises(RateLimitError, match="LinkedIn security challenge"):
             await detect_rate_limit(mock_page)
 
     async def test_normal_page_with_main_skips_body_heuristic(self, mock_page):

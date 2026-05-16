@@ -463,6 +463,10 @@ class LinkedInExtractor:
     def __init__(self, page: Page):
         self._page = page
 
+    @property
+    def page(self) -> Page:
+        return self._page
+
     @staticmethod
     def _normalize_body_marker(value: Any) -> str:
         """Compress body text into a short, single-line diagnostic marker."""

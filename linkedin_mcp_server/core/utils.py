@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import random
 
 from patchright.async_api import Page, TimeoutError as PlaywrightTimeoutError
 
@@ -14,8 +15,9 @@ async def detect_rate_limit(page: Page) -> None:
     """Detect if LinkedIn has rate-limited or security-challenged the session.
 
     Checks (in order):
-    1. URL contains /checkpoint or /authwall (security challenge)
-    2. Body text contains rate-limit phrases on error-shaped pages (throttling)
+    1. URL contains /checkpoint, /authwall, or /captcha (security challenge)
+    2. CAPTCHA iframe or element is present on the page
+    3. Body text contains rate-limit phrases on error-shaped pages (throttling)
 
     The body-text heuristic only runs on pages without a ``<main>`` element
     and with short body text (<2000 chars), since real rate-limit pages are
@@ -25,23 +27,31 @@ async def detect_rate_limit(page: Page) -> None:
     Raises:
         RateLimitError: If any rate-limiting or security challenge is detected
     """
-    # Check URL for security challenges
     current_url = page.url
-    if "linkedin.com/checkpoint" in current_url or "authwall" in current_url:
+    if any(
+        trigger in current_url for trigger in ("/checkpoint", "/authwall", "/captcha")
+    ):
         raise RateLimitError(
-            "LinkedIn security checkpoint detected. "
-            "You may need to verify your identity or wait before continuing.",
+            f"LinkedIn security challenge detected. URL: {current_url}",
             suggested_wait_time=30,
         )
 
-    # Check for rate limit messages — only on error-shaped pages.
-    # Real rate-limit pages have no <main> element and short body text.
-    # Normal LinkedIn pages (profiles, jobs) have <main> and long content
-    # that may incidentally contain phrases like "slow down".
+    try:
+        captcha_iframe = page.locator('iframe[src*="captcha"]')
+        if await captcha_iframe.count() > 0:
+            raise RateLimitError(
+                "CAPTCHA challenge detected on page.",
+                suggested_wait_time=60,
+            )
+    except RateLimitError:
+        raise
+    except PlaywrightTimeoutError:
+        pass
+
     try:
         has_main = await page.locator("main").count() > 0
         if has_main:
-            return  # Normal page with content, skip body text heuristic
+            return
 
         body_text = await page.locator("body").inner_text(timeout=1000)
         if body_text and len(body_text) < 2000:
@@ -174,3 +184,19 @@ async def handle_modal_close(page: Page) -> bool:
         logger.debug("Error closing modal: %s", e)
 
     return False
+
+
+def backoff_with_jitter(
+    attempt: int,
+    base_delay: float = 1.0,
+    max_delay: float = 60.0,
+    jitter_factor: float = 0.1,
+) -> float:
+    delay = min(base_delay * (2**attempt), max_delay)
+    jitter = random.uniform(-jitter_factor * delay, jitter_factor * delay)
+    return max(0, delay + jitter)
+
+
+async def detect_rate_limit_post_action(page: Page) -> None:
+    await asyncio.sleep(2)
+    await detect_rate_limit(page)

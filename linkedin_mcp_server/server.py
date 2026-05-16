@@ -23,10 +23,17 @@ from linkedin_mcp_server.sequential_tool_middleware import (
     SequentialToolExecutionMiddleware,
 )
 from linkedin_mcp_server.tools.company import register_company_tools
+from linkedin_mcp_server.tools.engagement import register_engagement_tools
 from linkedin_mcp_server.tools.feed import register_feed_tools
 from linkedin_mcp_server.tools.job import register_job_tools
 from linkedin_mcp_server.tools.messaging import register_messaging_tools
+from linkedin_mcp_server.tools.network import register_network_tools
+from linkedin_mcp_server.tools.people import register_people_tools
 from linkedin_mcp_server.tools.person import register_person_tools
+from linkedin_mcp_server.tools.post import register_post_tools
+from linkedin_mcp_server.tools.profile import register_profile_tools
+from linkedin_mcp_server.tools.recommendations import register_recommendation_tools
+from linkedin_mcp_server.tools.saved_jobs import register_saved_job_tools
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +69,13 @@ def create_mcp_server(*, tool_timeout: float = DEFAULT_TOOL_TIMEOUT_SECONDS) -> 
     register_job_tools(mcp, tool_timeout=tool_timeout)
     register_messaging_tools(mcp, tool_timeout=tool_timeout)
     register_feed_tools(mcp, tool_timeout=tool_timeout)
+    register_saved_job_tools(mcp, tool_timeout=tool_timeout)
+    register_people_tools(mcp, tool_timeout=tool_timeout)
+    register_post_tools(mcp, tool_timeout=tool_timeout)
+    register_engagement_tools(mcp, tool_timeout=tool_timeout)
+    register_network_tools(mcp, tool_timeout=tool_timeout)
+    register_profile_tools(mcp, tool_timeout=tool_timeout)
+    register_recommendation_tools(mcp, tool_timeout=tool_timeout)
 
     # Register session management tool
     @mcp.tool(

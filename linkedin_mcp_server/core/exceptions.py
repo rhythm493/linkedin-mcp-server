@@ -43,3 +43,33 @@ class ScrapingError(LinkedInScraperException):
     """Raised when scraping fails for various reasons."""
 
     pass
+
+
+class InteractionError(LinkedInScraperException):
+    """Raised when a page interaction fails."""
+
+    pass
+
+
+class SelectorError(LinkedInScraperException):
+    """Raised when element selection fails."""
+
+    pass
+
+
+class ResolverError(LinkedInScraperException):
+    """Raised when entity resolution fails."""
+
+    pass
+
+
+class ConcurrencyError(LinkedInScraperException):
+    """Raised when concurrent operations exceed limits."""
+
+    pass
+
+
+class QuotaExceededError(LinkedInScraperException):
+    """Raised when usage quota is exceeded."""
+
+    pass

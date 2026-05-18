@@ -369,6 +369,7 @@ def _build_extractor_params(tool_name: str, tool_params: dict) -> dict:
         "get_feed": ["num_posts"],
         "get_inbox": ["limit"],
         "get_conversation": ["linkedin_username", "thread_id", "index"],
+        "get_saved_jobs": ["limit", "page", "next_cursor"],
     }
     allowed = mapping.get(tool_name, [])
     return {k: v for k, v in tool_params.items() if k in allowed}
@@ -420,43 +421,43 @@ async def _fetch_internal(
     page = extractor.page
 
     if tool_name == "get_saved_jobs":
-        await goto_and_check(
-            page, "https://www.linkedin.com/my-items/saved-jobs/?cardType=SAVED&start=0"
-        )
-        await asyncio.sleep(2)
-        rows_loc = page.locator("li, article, .job-card-container, [data-job-id]")
-        jobs: list[dict] = []
+        max_pages = tool_params.get("max_pages")
+        all_jobs: list[dict] = []
         seen_ids: set[str] = set()
-        total = await rows_loc.count()
-        for i in range(total):
-            row = rows_loc.nth(i)
-            anchor = row.locator("a[href*='/jobs/view/']").first
-            href = (
-                await anchor.get_attribute("href") if await anchor.count() > 0 else None
-            )
-            if href and href.startswith("/"):
-                href = f"https://www.linkedin.com{href}"
-            if not href:
-                continue
-            job_id_match = _JOB_ID_RE.search(href)
-            job_id = job_id_match.group(1) if job_id_match else None
-            if job_id and job_id in seen_ids:
-                continue
-            if job_id:
-                seen_ids.add(job_id)
-            try:
-                text = await row.inner_text(timeout=1000)
-            except Exception:
-                continue
-            from linkedin_mcp_server.tools.saved_jobs import _parse_saved_job_card_text
+        page_num = 1
+        has_next = True
 
-            card = _parse_saved_job_card_text(text, job_url=href)
-            if card:
-                jobs.append(card)
+        while has_next:
+            if max_pages and page_num > max_pages:
+                break
+
+            method = getattr(extractor, "get_saved_jobs", None)
+            if method is None:
+                raise RuntimeError("Extractor missing get_saved_jobs method")
+
+            result = await method(limit=25, page=page_num)
+            jobs = result.get("jobs", [])
+
+            for job in jobs:
+                job_id = job.get("job_id")
+                if job_id and job_id in seen_ids:
+                    continue
+                if job_id:
+                    seen_ids.add(job_id)
+                all_jobs.append(job)
+
+            has_next = result.get("has_next", False)
+            page_num += 1
+
+            # Safety: stop if no jobs returned (end of data)
+            if not jobs:
+                break
+
         return {
-            "jobs": jobs,
+            "jobs": all_jobs,
             "sections": {},
             "url": "https://www.linkedin.com/my-items/saved-jobs/?cardType=SAVED",
+            "pages_fetched": page_num - 1,
         }
 
     if tool_name == "get_job_recommendations":

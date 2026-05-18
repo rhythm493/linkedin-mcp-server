@@ -76,10 +76,10 @@ class TestResolveDbPath:
         expected = os.path.normpath(os.path.join(os.getcwd(), "data/linkedin.db"))
         assert result == expected
 
-    def test_rejects_path_outside_cwd(self, monkeypatch):
+    def test_accepts_absolute_path(self, monkeypatch):
         monkeypatch.setattr("os.getcwd", lambda: "/home/user/project")
-        with pytest.raises(ValueError, match="must be inside CWD"):
-            _resolve_db_path("/tmp/other.db")
+        result = _resolve_db_path("/tmp/other.db")
+        assert result == "/tmp/other.db"
 
 
 class TestParamsHash:

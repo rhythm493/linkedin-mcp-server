@@ -90,12 +90,13 @@ _JOB_ID_RE = re.compile(r"/jobs/view/(\d+)")
 
 
 def _resolve_db_path(db_path: str) -> str:
-    """Resolve db_path relative to CWD. Reject paths outside CWD."""
-    cwd = os.getcwd()
-    resolved = os.path.normpath(os.path.join(cwd, db_path))
-    if not resolved.startswith(cwd):
-        raise ValueError(f"db_path must be inside CWD: {db_path}")
-    return resolved
+    """Resolve db_path to absolute path.
+
+    If relative, resolves against CWD. Absolute paths are accepted as-is.
+    """
+    if os.path.isabs(db_path):
+        return os.path.normpath(db_path)
+    return os.path.normpath(os.path.join(os.getcwd(), db_path))
 
 
 def _params_hash(params: dict) -> str:

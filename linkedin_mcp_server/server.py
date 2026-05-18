@@ -22,6 +22,7 @@ from linkedin_mcp_server.error_handler import raise_tool_error
 from linkedin_mcp_server.sequential_tool_middleware import (
     SequentialToolExecutionMiddleware,
 )
+from linkedin_mcp_server.tools.export import register_export_tools
 from linkedin_mcp_server.tools.company import register_company_tools
 from linkedin_mcp_server.tools.engagement import register_engagement_tools
 from linkedin_mcp_server.tools.feed import register_feed_tools
@@ -76,6 +77,7 @@ def create_mcp_server(*, tool_timeout: float = DEFAULT_TOOL_TIMEOUT_SECONDS) -> 
     register_network_tools(mcp, tool_timeout=tool_timeout)
     register_profile_tools(mcp, tool_timeout=tool_timeout)
     register_recommendation_tools(mcp, tool_timeout=tool_timeout)
+    register_export_tools(mcp, tool_timeout=tool_timeout)
 
     # Register session management tool
     @mcp.tool(

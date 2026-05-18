@@ -62,6 +62,9 @@ Through this LinkedIn MCP server, AI assistants like Claude can connect to your 
 | `set_open_to_work` | Enable or disable the Open To Work profile signal | working |
 | `add_profile_skills` | Add new skills to the logged-in user's profile | working |
 | `close_session` | Close browser session and clean up resources | working |
+| `export_to_db` | Export LinkedIn data (profiles, jobs, companies, etc.) to a local SQLite database | working |
+| `run_sql` | Execute SQL queries against a local SQLite database | working |
+| `list_tables` | List all tables and their schemas in a local SQLite database | working |
 
 <br/>
 <br/>

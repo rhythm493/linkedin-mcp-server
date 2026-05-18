@@ -112,6 +112,18 @@
     {
       "name": "close_session",
       "description": "Properly close browser session and clean up resources"
+    },
+    {
+      "name": "export_to_db",
+      "description": "Export LinkedIn data (profiles, jobs, companies, etc.) directly to a local SQLite database, avoiding context window pollution"
+    },
+    {
+      "name": "run_sql",
+      "description": "Execute SQL queries against a local SQLite database (SELECT, INSERT, ATTACH, etc.)"
+    },
+    {
+      "name": "list_tables",
+      "description": "List all tables and their schemas in a local SQLite database"
     }
   ],
   "user_config": {},

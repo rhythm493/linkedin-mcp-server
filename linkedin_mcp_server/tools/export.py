@@ -420,10 +420,13 @@ async def _fetch_internal(
     page = extractor.page
 
     if tool_name == "get_saved_jobs":
-        await goto_and_check(page, "https://www.linkedin.com/my-items/saved-jobs/")
+        await goto_and_check(
+            page, "https://www.linkedin.com/my-items/saved-jobs/?cardType=SAVED&start=0"
+        )
         await asyncio.sleep(2)
         rows_loc = page.locator("li, article, .job-card-container, [data-job-id]")
         jobs: list[dict] = []
+        seen_ids: set[str] = set()
         total = await rows_loc.count()
         for i in range(total):
             row = rows_loc.nth(i)
@@ -433,6 +436,14 @@ async def _fetch_internal(
             )
             if href and href.startswith("/"):
                 href = f"https://www.linkedin.com{href}"
+            if not href:
+                continue
+            job_id_match = _JOB_ID_RE.search(href)
+            job_id = job_id_match.group(1) if job_id_match else None
+            if job_id and job_id in seen_ids:
+                continue
+            if job_id:
+                seen_ids.add(job_id)
             try:
                 text = await row.inner_text(timeout=1000)
             except Exception:
@@ -445,7 +456,7 @@ async def _fetch_internal(
         return {
             "jobs": jobs,
             "sections": {},
-            "url": "https://www.linkedin.com/my-items/saved-jobs/",
+            "url": "https://www.linkedin.com/my-items/saved-jobs/?cardType=SAVED",
         }
 
     if tool_name == "get_job_recommendations":

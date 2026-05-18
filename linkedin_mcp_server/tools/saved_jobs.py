@@ -31,10 +31,15 @@ def _parse_saved_job_card_text(
     if len(lines) < 2:
         return None
     title = lines[0]
-    company = lines[1]
-    location = lines[2] if len(lines) > 2 else None
+    # Skip ", Verified" badge if present
+    company_idx = 1
+    if lines[1].startswith(", Verified"):
+        company_idx = 2
+    company = lines[company_idx] if company_idx < len(lines) else None
+    location_idx = company_idx + 1
+    location = lines[location_idx] if location_idx < len(lines) else None
     posting_date = None
-    for line in lines[2:]:
+    for line in lines[location_idx:]:
         if "ago" in line.lower() or re.match(r"\d{4}-\d{2}-\d{2}$", line):
             posting_date = line
             break
@@ -129,9 +134,9 @@ def register_saved_job_tools(
         current_page = decode_cursor(next_cursor, page)
         page_obj = await get_page(ctx, tool_name="get_saved_jobs")
 
-        url = "https://www.linkedin.com/my-items/saved-jobs/"
-        if current_page > 1:
-            url = f"{url}?page={current_page}"
+        # cardType=SAVED selects the Saved tab; start=offset handles pagination
+        start = (current_page - 1) * 10
+        url = f"https://www.linkedin.com/my-items/saved-jobs/?cardType=SAVED&start={start}"
 
         if ctx:
             await ctx.report_progress(
@@ -142,6 +147,7 @@ def register_saved_job_tools(
         await asyncio.sleep(2)
 
         rows = page_obj.locator("li, article, .job-card-container, [data-job-id]")
+        seen_ids: set[str] = set()
         jobs: list[dict[str, Any]] = []
         total_rows = await rows.count()
 
@@ -153,6 +159,15 @@ def register_saved_job_tools(
             )
             if href and href.startswith("/"):
                 href = f"https://www.linkedin.com{href}"
+            if not href:
+                continue  # Skip nav/footer noise without job links
+
+            job_id = _extract_job_id(href)
+            if job_id and job_id in seen_ids:
+                continue  # Each job card has 2 duplicate links
+            if job_id:
+                seen_ids.add(job_id)
+
             try:
                 text = await row.inner_text(timeout=1000)
             except Exception:

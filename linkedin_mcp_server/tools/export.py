@@ -485,8 +485,14 @@ async def _fetch_internal(
             logger.debug("Page %d parsed %d new jobs", page_num, len(page_jobs))
             all_jobs.extend(page_jobs)
 
-            # Check if there's a next page (pagination button exists)
-            has_next = len(page_jobs) >= limit
+            # LinkedIn paginates by 10 items; check for next button in DOM
+            try:
+                next_btn = page.locator('button:has-text("Next"), a:has-text("Next"), button[aria-label*="next"], a[aria-label*="next"]')
+                has_next = await next_btn.count() > 0
+                logger.debug("Page %d has_next button check: %s", page_num, has_next)
+            except Exception:
+                has_next = len(page_jobs) > 0
+
             page_num += 1
 
             # Safety: stop if no jobs returned (end of data)

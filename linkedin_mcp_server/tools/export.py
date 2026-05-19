@@ -422,6 +422,7 @@ async def _fetch_internal(
     page = extractor.page
 
     if tool_name == "get_saved_jobs":
+        logger.debug("Starting saved_jobs multi-page fetch")
         max_pages = tool_params.get("max_pages")
         all_jobs: list[dict] = []
         seen_ids: set[str] = set()
@@ -430,14 +431,18 @@ async def _fetch_internal(
 
         while has_next:
             if max_pages and page_num > max_pages:
+                logger.debug("Reached max_pages=%d, stopping", max_pages)
                 break
 
             method = getattr(extractor, "get_saved_jobs", None)
             if method is None:
+                logger.error("Extractor missing get_saved_jobs method")
                 raise RuntimeError("Extractor missing get_saved_jobs method")
 
+            logger.debug("Fetching saved_jobs page %d (limit=25)", page_num)
             result = await method(limit=25, page=page_num)
             jobs = result.get("jobs", [])
+            logger.debug("Page %d returned %d jobs", page_num, len(jobs))
 
             for job in jobs:
                 job_id = job.get("job_id")
@@ -452,8 +457,10 @@ async def _fetch_internal(
 
             # Safety: stop if no jobs returned (end of data)
             if not jobs:
+                logger.debug("No more jobs, ending pagination")
                 break
 
+        logger.debug("Saved_jobs fetch complete: %d jobs across %d pages", len(all_jobs), page_num - 1)
         return {
             "jobs": all_jobs,
             "sections": {},
@@ -677,8 +684,12 @@ def register_export_tools(
 
             # Call the right scraper logic
             logger.debug("Calling _fetch_internal for %s with params: %s", tool_name, tool_params)
-            raw_result = await _fetch_internal(tool_name, extractor, tool_params, ctx)
-            logger.debug("Raw result received: %d jobs/sections", len(raw_result.get("jobs", raw_result.get("sections", {}))))
+            try:
+                raw_result = await _fetch_internal(tool_name, extractor, tool_params, ctx)
+            except Exception as e:
+                logger.error("Scraping failed for %s: %s: %s", tool_name, type(e).__name__, e, exc_info=True)
+                raise
+            logger.debug("Raw result received: %d keys: %s", len(raw_result), list(raw_result.keys()))
 
             # Normalize to rows
             normalizer = _NORMALIZERS[tool_name]

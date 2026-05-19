@@ -422,8 +422,17 @@ async def _fetch_internal(
     page = extractor.page
 
     if tool_name == "get_saved_jobs":
+        from linkedin_mcp_server.tools._common import goto_and_check
+        from linkedin_mcp_server.tools.saved_jobs import (
+            _parse_saved_job_card_text,
+            _extract_job_id,
+            decode_cursor,
+            build_paginated_response,
+        )
+
         logger.debug("Starting saved_jobs multi-page fetch")
         max_pages = tool_params.get("max_pages")
+        limit = min(tool_params.get("limit", 25), 25)
         all_jobs: list[dict] = []
         seen_ids: set[str] = set()
         page_num = 1
@@ -434,29 +443,54 @@ async def _fetch_internal(
                 logger.debug("Reached max_pages=%d, stopping", max_pages)
                 break
 
-            method = getattr(extractor, "get_saved_jobs", None)
-            if method is None:
-                logger.error("Extractor missing get_saved_jobs method")
-                raise RuntimeError("Extractor missing get_saved_jobs method")
+            # cardType=SAVED selects the Saved tab; start=offset handles pagination
+            start = (page_num - 1) * limit
+            url = f"https://www.linkedin.com/my-items/saved-jobs/?cardType=SAVED&start={start}"
 
-            logger.debug("Fetching saved_jobs page %d (limit=25)", page_num)
-            result = await method(limit=25, page=page_num)
-            jobs = result.get("jobs", [])
-            logger.debug("Page %d returned %d jobs", page_num, len(jobs))
+            logger.debug("Navigating to saved jobs page %d: %s", page_num, url)
+            await goto_and_check(page, url)
+            await asyncio.sleep(2)
 
-            for job in jobs:
-                job_id = job.get("job_id")
+            rows = page.locator("li, article, .job-card-container, [data-job-id]")
+            total_rows = await rows.count()
+            logger.debug("Page %d found %d DOM rows", page_num, total_rows)
+
+            page_jobs = []
+            for idx in range(total_rows):
+                row = rows.nth(idx)
+                anchor = row.locator("a[href*='/jobs/view/']").first
+                href = (
+                    await anchor.get_attribute("href") if await anchor.count() > 0 else None
+                )
+                if href and href.startswith("/"):
+                    href = f"https://www.linkedin.com{href}"
+                if not href:
+                    continue
+
+                job_id = _extract_job_id(href)
                 if job_id and job_id in seen_ids:
                     continue
                 if job_id:
                     seen_ids.add(job_id)
-                all_jobs.append(job)
 
-            has_next = result.get("has_next", False)
+                try:
+                    text = await row.inner_text(timeout=1000)
+                except Exception:
+                    continue
+                card = _parse_saved_job_card_text(text, job_url=href)
+                if card is None:
+                    continue
+                page_jobs.append(card)
+
+            logger.debug("Page %d parsed %d new jobs", page_num, len(page_jobs))
+            all_jobs.extend(page_jobs)
+
+            # Check if there's a next page (pagination button exists)
+            has_next = len(page_jobs) >= limit
             page_num += 1
 
             # Safety: stop if no jobs returned (end of data)
-            if not jobs:
+            if not page_jobs:
                 logger.debug("No more jobs, ending pagination")
                 break
 

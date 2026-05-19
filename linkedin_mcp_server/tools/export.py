@@ -432,7 +432,6 @@ async def _fetch_internal(
 
         logger.debug("Starting saved_jobs multi-page fetch")
         max_pages = tool_params.get("max_pages")
-        limit = min(tool_params.get("limit", 25), 25)
         all_jobs: list[dict] = []
         seen_ids: set[str] = set()
         page_num = 1
@@ -443,8 +442,9 @@ async def _fetch_internal(
                 logger.debug("Reached max_pages=%d, stopping", max_pages)
                 break
 
-            # cardType=SAVED selects the Saved tab; start=offset handles pagination
-            start = (page_num - 1) * limit
+            # LinkedIn saved jobs displays 10 items per page
+            # Use (page_num - 1) * 10 as offset to match UI pagination
+            start = (page_num - 1) * 10
             url = f"https://www.linkedin.com/my-items/saved-jobs/?cardType=SAVED&start={start}"
 
             logger.debug("Navigating to saved jobs page %d: %s", page_num, url)

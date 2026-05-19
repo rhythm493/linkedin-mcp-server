@@ -646,10 +646,13 @@ def register_export_tools(
             )
         db = _resolve_db_path(db_path)
 
+        logger.debug("export_to_db called: tool=%s, db=%s, table=%s, refresh=%s", tool_name, db, table_name, refresh)
+
         # Check cache
         with sqlite3.connect(db) as conn:
             cached = _check_cache(conn, tool_name, tool_params, table_name)
             if cached and not refresh:
+                logger.debug("Cache hit for %s, returning cached result", tool_name)
                 return ExportResult(
                     source="cache",
                     rows_saved=cached["row_count"],
@@ -659,31 +662,42 @@ def register_export_tools(
                 )
 
             if ctx is None:
+                logger.error("Context is None but cache miss requires scraping")
                 raise RuntimeError("Context required for scraping when cache miss")
 
             # Import scraper internals
+            logger.debug("Cache miss, fetching fresh data for %s", tool_name)
             from linkedin_mcp_server.dependencies import get_ready_extractor
 
+            logger.debug("Getting ready extractor for export_to_db:%s", tool_name)
             extractor = await get_ready_extractor(
                 ctx, tool_name=f"export_to_db:{tool_name}"
             )
+            logger.debug("Extractor obtained successfully")
 
             # Call the right scraper logic
+            logger.debug("Calling _fetch_internal for %s with params: %s", tool_name, tool_params)
             raw_result = await _fetch_internal(tool_name, extractor, tool_params, ctx)
+            logger.debug("Raw result received: %d jobs/sections", len(raw_result.get("jobs", raw_result.get("sections", {}))))
 
             # Normalize to rows
             normalizer = _NORMALIZERS[tool_name]
             rows = normalizer(raw_result)
+            logger.debug("Normalized %d rows for export", len(rows))
 
             # Write to DB
             if rows:
+                logger.debug("Creating table %s and inserting %d rows", table_name, len(rows))
                 columns = _create_table(conn, table_name, rows[0])
                 count = _insert_rows(conn, table_name, rows)
+                logger.debug("Inserted %d rows into %s", count, table_name)
             else:
                 columns = []
                 count = 0
+                logger.warning("No rows to export for %s", tool_name)
 
             _update_cache(conn, tool_name, tool_params, table_name, count)
+            logger.debug("Cache updated for %s with %d rows", tool_name, count)
 
             return ExportResult(
                 source="linkedin",

@@ -90,6 +90,21 @@ def _make_saved_jobs_page(jobs: list[tuple[str, str, str, str]]) -> MagicMock:
     return page
 
 
+def _make_mock_extractor_page() -> MagicMock:
+    """Create a mock Playwright page that supports the job scraping pipeline."""
+    page = MagicMock()
+    page.goto = AsyncMock()
+    page.wait_for_selector = AsyncMock()
+    page.wait_for_function = AsyncMock()
+    main_loc = MagicMock()
+    main_loc.inner_text = AsyncMock(return_value="Senior Engineer at Google")
+    page.locator = MagicMock(
+        side_effect=lambda s: main_loc if s == "main" else MagicMock()
+    )
+    page.close = AsyncMock()
+    return page
+
+
 def _setup_mock_extractor(result: dict) -> MagicMock:
     """Create a mock extractor with async methods returning the given result."""
     mock = MagicMock()
@@ -611,23 +626,30 @@ class TestExportToDbIntegration:
             os.chdir(orig_cwd)
 
     async def test_export_job_details_batch(self, tmp_path, mock_context):
-        """Batch export job details for multiple job IDs."""
+        """Batch export job details for multiple job IDs using parallel scraping."""
         orig_cwd = os.getcwd()
         os.chdir(tmp_path)
         try:
             db = "test.db"
+
+            # Create mock page that supports the scraping pipeline
+            mock_page = _make_mock_extractor_page()
+            mock_ctx_obj = MagicMock()
+            mock_ctx_obj.new_page = AsyncMock(return_value=mock_page)
+
             mock_extractor = _setup_mock_extractor({})
-            mock_extractor.scrape_job = AsyncMock(
-                side_effect=[
-                    {
-                        "url": f"https://www.linkedin.com/jobs/view/{jid}/",
-                        "sections": {"job_posting": f"Details for {jid}"},
-                    }
-                    for jid in ["111", "222", "333"]
-                ]
-            )
+            mock_extractor.page.context = mock_ctx_obj
+
+            async def mock_scrape(page, jid):
+                return {
+                    "url": f"https://www.linkedin.com/jobs/view/{jid}/",
+                    "sections": {"job_posting": f"Details for {jid}"},
+                }
+
+            import linkedin_mcp_server.tools._job_scrape as _js_mod
 
             monkeypatch = pytest.MonkeyPatch()
+            monkeypatch.setattr(_js_mod, "scrape_job_on_page", mock_scrape)
             monkeypatch.setattr(
                 "linkedin_mcp_server.dependencies.get_ready_extractor",
                 AsyncMock(return_value=mock_extractor),
@@ -657,10 +679,106 @@ class TestExportToDbIntegration:
                 assert rows[0][0] == "111"
                 assert "Details for 111" in rows[0][1]
 
-            scrape_calls = [
-                call[1]["job_id"] for call in mock_extractor.scrape_job.call_args_list
-            ]
-            assert scrape_calls == ["111", "222", "333"]
+            monkeypatch.undo()
+        finally:
+            os.chdir(orig_cwd)
+
+    async def test_export_job_details_batch_with_errors(self, tmp_path, mock_context):
+        """Batch export handles partial failures gracefully."""
+        orig_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            db = "test.db"
+
+            mock_page = _make_mock_extractor_page()
+            mock_ctx_obj = MagicMock()
+            mock_ctx_obj.new_page = AsyncMock(return_value=mock_page)
+
+            mock_extractor = _setup_mock_extractor({})
+            mock_extractor.page.context = mock_ctx_obj
+
+            async def mock_scrape_partial(page, jid):
+                if jid == "222":
+                    raise RuntimeError("Page load failed")
+                return {
+                    "url": f"https://www.linkedin.com/jobs/view/{jid}/",
+                    "sections": {"job_posting": f"Details for {jid}"},
+                }
+
+            import linkedin_mcp_server.tools._job_scrape as _js_mod
+
+            monkeypatch = pytest.MonkeyPatch()
+            monkeypatch.setattr(_js_mod, "scrape_job_on_page", mock_scrape_partial)
+            monkeypatch.setattr(
+                "linkedin_mcp_server.dependencies.get_ready_extractor",
+                AsyncMock(return_value=mock_extractor),
+            )
+
+            mcp = FastMCP("test")
+            register_export_tools(mcp)
+            tool_fn = await _get_tool_fn(mcp, "export_to_db")
+
+            result = await tool_fn(
+                tool_name="get_job_details",
+                tool_params={"job_ids": ["111", "222", "333"]},
+                db_path=db,
+                table_name="job_details_errors",
+                refresh=True,
+                ctx=mock_context,
+            )
+
+            # 2 successful + 1 error row = 3 total rows (error rows are also saved)
+            assert result.source == "linkedin"
+            assert result.rows_saved == 3
+
+            monkeypatch.undo()
+        finally:
+            os.chdir(orig_cwd)
+
+    async def test_export_job_details_batch_comma_string(self, tmp_path, mock_context):
+        """Batch export accepts comma-separated job_ids string."""
+        orig_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            db = "test.db"
+
+            mock_page = _make_mock_extractor_page()
+            mock_ctx_obj = MagicMock()
+            mock_ctx_obj.new_page = AsyncMock(return_value=mock_page)
+
+            mock_extractor = _setup_mock_extractor({})
+            mock_extractor.page.context = mock_ctx_obj
+
+            async def mock_scrape(page, jid):
+                return {
+                    "url": f"https://www.linkedin.com/jobs/view/{jid}/",
+                    "sections": {"job_posting": f"Job {jid}"},
+                }
+
+            import linkedin_mcp_server.tools._job_scrape as _js_mod
+
+            monkeypatch = pytest.MonkeyPatch()
+            monkeypatch.setattr(_js_mod, "scrape_job_on_page", mock_scrape)
+            monkeypatch.setattr(
+                "linkedin_mcp_server.dependencies.get_ready_extractor",
+                AsyncMock(return_value=mock_extractor),
+            )
+
+            mcp = FastMCP("test")
+            register_export_tools(mcp)
+            tool_fn = await _get_tool_fn(mcp, "export_to_db")
+
+            result = await tool_fn(
+                tool_name="get_job_details",
+                tool_params={"job_ids": "111,222,333"},
+                db_path=db,
+                table_name="job_details_csv",
+                refresh=True,
+                ctx=mock_context,
+            )
+
+            assert result.source == "linkedin"
+            assert result.rows_saved == 3
 
             monkeypatch.undo()
         finally:

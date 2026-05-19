@@ -448,35 +448,50 @@ async def _fetch_internal(
         ),
     }
 
-    # Batch mode: get_job_details with job_ids list
+    # Batch mode: get_job_details with job_ids list — parallel execution
     if tool_name == "get_job_details" and "job_ids" in tool_params:
         job_ids = tool_params["job_ids"]
         if isinstance(job_ids, str):
-            # Support comma-separated string too
             job_ids = [jid.strip() for jid in job_ids.split(",") if jid.strip()]
 
-        logger.debug("Batch job_details: fetching %d jobs", len(job_ids))
-        all_jobs = []
-        for idx, jid in enumerate(job_ids):
-            logger.debug("Fetching job %d/%d: %s", idx + 1, len(job_ids), jid)
-            try:
-                job_result = await extractor.scrape_job(job_id=jid)
-                job_result["job_id"] = jid
-                all_jobs.append(job_result)
-                logger.debug("Job %s scraped successfully", jid)
-            except Exception as e:
-                logger.warning("Failed to scrape job %s: %s", jid, e)
-                all_jobs.append(
-                    {
-                        "job_id": jid,
+        logger.debug("Batch job_details: fetching %d jobs in parallel", len(job_ids))
+
+        from linkedin_mcp_server.tools._job_scrape import scrape_job_on_page
+
+        context = extractor.page.context
+        semaphore = asyncio.Semaphore(10)  # max 10 concurrent pages
+
+        async def _scrape_one(jid: str) -> dict:
+            async with semaphore:
+                page = await context.new_page()
+                try:
+                    return await scrape_job_on_page(page, jid)
+                except Exception as e:
+                    logger.warning("Failed to scrape job %s: %s", jid, e)
+                    return {
                         "url": f"https://www.linkedin.com/jobs/view/{jid}/",
                         "sections": {},
                         "section_errors": {"job_posting": {"error": str(e)}},
                     }
+                finally:
+                    await page.close()
+
+        tasks = [_scrape_one(jid) for jid in job_ids]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        all_jobs: list[dict] = []
+        for jid, result in zip(job_ids, results):
+            if isinstance(result, Exception):
+                all_jobs.append(
+                    {
+                        "url": f"https://www.linkedin.com/jobs/view/{jid}/",
+                        "sections": {},
+                        "section_errors": {"job_posting": {"error": str(result)}},
+                    }
                 )
-            # Small delay between jobs to avoid rate limiting
-            if idx < len(job_ids) - 1:
-                await asyncio.sleep(1)
+            elif isinstance(result, dict):
+                result["job_id"] = jid
+                all_jobs.append(result)
 
         logger.debug(
             "Batch job_details complete: %d jobs fetched, %d with content",

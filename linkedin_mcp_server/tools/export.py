@@ -261,7 +261,41 @@ def _normalize_sections(result: dict, tool_name: str) -> list[dict]:
 
 
 def _normalize_job_details(result: dict) -> list[dict]:
+    """Normalize job details result (single or batch)."""
+    # Check if this is a batch result
+    if "jobs" in result:
+        return _normalize_job_details_batch(result)
     return _normalize_sections(result, "get_job_details")
+
+
+def _normalize_job_details_batch(result: dict) -> list[dict]:
+    """Normalize batch job details results."""
+    jobs = result.get("jobs", [])
+    rows = []
+    for job in jobs:
+        sections = job.get("sections", {})
+        for section_name, content in sections.items():
+            row = {
+                "job_id": job.get("job_id"),
+                "url": job.get("url"),
+                "section_name": section_name,
+                "content": content,
+                "_exported_at": datetime.now(timezone.utc).isoformat(),
+            }
+            rows.append(row)
+        if not sections:
+            # Store error rows too so user knows what failed
+            errors = job.get("section_errors", {})
+            for section_name, error_info in errors.items():
+                rows.append({
+                    "job_id": job.get("job_id"),
+                    "url": job.get("url"),
+                    "section_name": section_name,
+                    "content": None,
+                    "error": json.dumps(error_info) if error_info else None,
+                    "_exported_at": datetime.now(timezone.utc).isoformat(),
+                })
+    return rows
 
 
 def _normalize_person_profile(result: dict) -> list[dict]:
@@ -411,6 +445,38 @@ async def _fetch_internal(
             _build_extractor_params(tool_name, tool_params),
         ),
     }
+
+    # Batch mode: get_job_details with job_ids list
+    if tool_name == "get_job_details" and "job_ids" in tool_params:
+        job_ids = tool_params["job_ids"]
+        if isinstance(job_ids, str):
+            # Support comma-separated string too
+            job_ids = [jid.strip() for jid in job_ids.split(",") if jid.strip()]
+        
+        logger.debug("Batch job_details: fetching %d jobs", len(job_ids))
+        all_jobs = []
+        for idx, jid in enumerate(job_ids):
+            logger.debug("Fetching job %d/%d: %s", idx + 1, len(job_ids), jid)
+            try:
+                job_result = await extractor.scrape_job(job_id=jid)
+                job_result["job_id"] = jid
+                all_jobs.append(job_result)
+                logger.debug("Job %s scraped successfully", jid)
+            except Exception as e:
+                logger.warning("Failed to scrape job %s: %s", jid, e)
+                all_jobs.append({
+                    "job_id": jid,
+                    "url": f"https://www.linkedin.com/jobs/view/{jid}/",
+                    "sections": {},
+                    "section_errors": {"job_posting": {"error": str(e)}},
+                })
+            # Small delay between jobs to avoid rate limiting
+            if idx < len(job_ids) - 1:
+                await asyncio.sleep(1)
+
+        logger.debug("Batch job_details complete: %d jobs fetched, %d with content", 
+                     len(all_jobs), sum(1 for j in all_jobs if j.get("sections")))
+        return {"jobs": all_jobs, "sections": {}, "url": "batch://job_details"}
 
     if tool_name in extractor_methods:
         method_name, params = extractor_methods[tool_name]
@@ -667,7 +733,7 @@ def register_export_tools(
             dict,
             Field(
                 default_factory=dict,
-                description='Parameters to pass to the LinkedIn tool (e.g. {"keywords": "python"} for search_jobs).',
+                description='Parameters to pass to the LinkedIn tool. Examples: {"keywords": "python"} for search_jobs, {"job_ids": ["4404087079", ...]} for batch job details.',
             ),
         ],
         refresh: Annotated[

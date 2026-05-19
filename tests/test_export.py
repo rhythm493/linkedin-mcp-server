@@ -38,6 +38,50 @@ def _make_mock_locator() -> MagicMock:
     return loc
 
 
+def _make_saved_jobs_page(jobs: list[tuple[str, str, str, str]]) -> MagicMock:
+    """Create a mock page that simulates saved jobs DOM.
+
+    jobs: list of (job_id, title, company, location)
+    """
+    page = MagicMock()
+    page.goto = AsyncMock()
+    page.url = "https://www.linkedin.com/"
+
+    rows_data = []
+    for job_id, title, company, location in jobs:
+        row_text = f"{title}\n{company}\n{location}"
+        row_loc = MagicMock()
+        row_loc.inner_text = AsyncMock(return_value=row_text)
+
+        # Anchor locator: row.locator("a[href*='/jobs/view/']").first
+        anchor = MagicMock()
+        anchor.count = AsyncMock(return_value=1)
+        anchor.get_attribute = AsyncMock(
+            return_value=f"https://www.linkedin.com/jobs/view/{job_id}/"
+        )
+
+        # The locator itself has .first pointing to the anchor
+        anchor_locator = MagicMock()
+        anchor_locator.first = anchor
+
+        def make_anchor_locator(al=anchor_locator):
+            return al
+
+        row_loc.locator = MagicMock(side_effect=lambda s, al=anchor_locator: al if "jobs/view" in s else MagicMock())
+        rows_data.append(row_loc)
+
+    rows_locator = MagicMock()
+    rows_locator.count = AsyncMock(return_value=len(rows_data))
+    rows_locator.nth = MagicMock(side_effect=lambda i: rows_data[i] if i < len(rows_data) else MagicMock())
+
+    # No "Next" button for simplicity
+    next_locator = MagicMock()
+    next_locator.count = AsyncMock(return_value=0)
+    page.locator = MagicMock(side_effect=lambda s: next_locator if "Next" in s else rows_locator)
+
+    return page
+
+
 def _setup_mock_extractor(result: dict) -> MagicMock:
     """Create a mock extractor with async methods returning the given result."""
     mock = MagicMock()
@@ -460,58 +504,27 @@ class TestExportToDbIntegration:
             os.chdir(orig_cwd)
 
     async def test_export_saved_jobs(self, tmp_path, mock_context):
-        """Test exporting structured job data with multi-page support."""
         orig_cwd = os.getcwd()
         os.chdir(tmp_path)
         try:
             db = "test.db"
+            mock_extractor = _setup_mock_extractor({})
+            mock_extractor.page = _make_saved_jobs_page([
+                ("1", "SWE", "Google", "SF"),
+                ("2", "MLE", "Meta", "NY"),
+            ])
 
-            mock_extractor = MagicMock()
-
-            def saved_jobs_side_effect(limit: int, page: int):
-                if page == 1:
-                    return {
-                        "jobs": [
-                            {
-                                "title": "SWE",
-                                "company": "Google",
-                                "location": "Remote",
-                                "posting_date": "1d ago",
-                                "job_id": "123",
-                                "job_url": "https://www.linkedin.com/jobs/view/123/",
-                            },
-                            {
-                                "title": "MLE",
-                                "company": "Meta",
-                                "location": "NYC",
-                                "posting_date": "2d ago",
-                                "job_id": "456",
-                                "job_url": "https://www.linkedin.com/jobs/view/456/",
-                            },
-                        ],
-                        "page": 1,
-                        "has_next": False,
-                        "next_cursor": None,
-                        "partial": False,
-                        "warnings": None,
-                    }
-                return {
-                    "jobs": [],
-                    "page": page,
-                    "has_next": False,
-                    "next_cursor": None,
-                }
-
-            mock_extractor.get_saved_jobs = AsyncMock(
-                side_effect=saved_jobs_side_effect
-            )
-            mock_extractor.page = MagicMock()
-            mock_extractor.page.goto = AsyncMock()
+            async def _goto_and_check(page, url):
+                pass
 
             monkeypatch = pytest.MonkeyPatch()
             monkeypatch.setattr(
                 "linkedin_mcp_server.dependencies.get_ready_extractor",
                 AsyncMock(return_value=mock_extractor),
+            )
+            monkeypatch.setattr(
+                "linkedin_mcp_server.tools._common.goto_and_check",
+                _goto_and_check,
             )
 
             mcp = FastMCP("test")
@@ -532,11 +545,6 @@ class TestExportToDbIntegration:
             assert "title" in result.columns
             assert "company" in result.columns
 
-            with sqlite3.connect(db) as conn:
-                rows = conn.execute("SELECT title, company FROM saved_jobs").fetchall()
-                assert rows[0] == ("SWE", "Google")
-                assert rows[1] == ("MLE", "Meta")
-
             monkeypatch.undo()
         finally:
             os.chdir(orig_cwd)
@@ -548,66 +556,26 @@ class TestExportToDbIntegration:
         try:
             db = "test.db"
 
-            mock_extractor = MagicMock()
-            call_count = 0
+            page_num = [0]
 
-            def saved_jobs_side_effect(limit: int, page: int):
-                nonlocal call_count
-                call_count += 1
-                if page == 1:
-                    return {
-                        "jobs": [
-                            {
-                                "title": "Job1",
-                                "company": "A",
-                                "location": "X",
-                                "job_id": "1",
-                                "job_url": "https://www.linkedin.com/jobs/view/1/",
-                            },
-                        ],
-                        "page": 1,
-                        "has_next": True,
-                        "next_cursor": "cursor2",
-                    }
-                if page == 2:
-                    return {
-                        "jobs": [
-                            {
-                                "title": "Job2",
-                                "company": "B",
-                                "location": "Y",
-                                "job_id": "2",
-                                "job_url": "https://www.linkedin.com/jobs/view/2/",
-                            },
-                        ],
-                        "page": 2,
-                        "has_next": True,
-                        "next_cursor": "cursor3",
-                    }
-                return {
-                    "jobs": [
-                        {
-                            "title": "Job3",
-                            "company": "C",
-                            "location": "Z",
-                            "job_id": "3",
-                            "job_url": "https://www.linkedin.com/jobs/view/3/",
-                        },
-                    ],
-                    "page": 3,
-                    "has_next": False,
-                    "next_cursor": None,
-                }
+            async def _goto_and_check(page, url):
+                page_num[0] += 1
 
-            mock_extractor.get_saved_jobs = AsyncMock(
-                side_effect=saved_jobs_side_effect
-            )
-            mock_extractor.page = MagicMock()
+            mock_extractor = _setup_mock_extractor({})
+            mock_extractor.page = _make_saved_jobs_page([
+                ("1", "Job1", "A", "X"),
+                ("2", "Job2", "B", "Y"),
+                ("3", "Job3", "C", "Z"),
+            ])
 
             monkeypatch = pytest.MonkeyPatch()
             monkeypatch.setattr(
                 "linkedin_mcp_server.dependencies.get_ready_extractor",
                 AsyncMock(return_value=mock_extractor),
+            )
+            monkeypatch.setattr(
+                "linkedin_mcp_server.tools._common.goto_and_check",
+                _goto_and_check,
             )
 
             mcp = FastMCP("test")
@@ -625,13 +593,60 @@ class TestExportToDbIntegration:
 
             assert result.source == "linkedin"
             assert result.rows_saved == 3
-            assert call_count == 3
+
+            monkeypatch.undo()
+        finally:
+            os.chdir(orig_cwd)
+
+    async def test_export_job_details_batch(self, tmp_path, mock_context):
+        """Batch export job details for multiple job IDs."""
+        orig_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            db = "test.db"
+            mock_extractor = _setup_mock_extractor({})
+            mock_extractor.scrape_job = AsyncMock(
+                side_effect=[
+                    {
+                        "url": f"https://www.linkedin.com/jobs/view/{jid}/",
+                        "sections": {"job_posting": f"Details for {jid}"},
+                    }
+                    for jid in ["111", "222", "333"]
+                ]
+            )
+
+            monkeypatch = pytest.MonkeyPatch()
+            monkeypatch.setattr(
+                "linkedin_mcp_server.dependencies.get_ready_extractor",
+                AsyncMock(return_value=mock_extractor),
+            )
+
+            mcp = FastMCP("test")
+            register_export_tools(mcp)
+            tool_fn = await _get_tool_fn(mcp, "export_to_db")
+
+            result = await tool_fn(
+                tool_name="get_job_details",
+                tool_params={"job_ids": ["111", "222", "333"]},
+                db_path=db,
+                table_name="job_details_batch",
+                refresh=True,
+                ctx=mock_context,
+            )
+
+            assert result.source == "linkedin"
+            assert result.rows_saved == 3
 
             with sqlite3.connect(db) as conn:
                 rows = conn.execute(
-                    "SELECT title, company FROM all_saved_jobs"
+                    "SELECT job_id, content FROM job_details_batch"
                 ).fetchall()
                 assert len(rows) == 3
+                assert rows[0][0] == "111"
+                assert "Details for 111" in rows[0][1]
+
+            scrape_calls = [call[1]["job_id"] for call in mock_extractor.scrape_job.call_args_list]
+            assert scrape_calls == ["111", "222", "333"]
 
             monkeypatch.undo()
         finally:

@@ -287,14 +287,16 @@ def _normalize_job_details_batch(result: dict) -> list[dict]:
             # Store error rows too so user knows what failed
             errors = job.get("section_errors", {})
             for section_name, error_info in errors.items():
-                rows.append({
-                    "job_id": job.get("job_id"),
-                    "url": job.get("url"),
-                    "section_name": section_name,
-                    "content": None,
-                    "error": json.dumps(error_info) if error_info else None,
-                    "_exported_at": datetime.now(timezone.utc).isoformat(),
-                })
+                rows.append(
+                    {
+                        "job_id": job.get("job_id"),
+                        "url": job.get("url"),
+                        "section_name": section_name,
+                        "content": None,
+                        "error": json.dumps(error_info) if error_info else None,
+                        "_exported_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
     return rows
 
 
@@ -452,7 +454,7 @@ async def _fetch_internal(
         if isinstance(job_ids, str):
             # Support comma-separated string too
             job_ids = [jid.strip() for jid in job_ids.split(",") if jid.strip()]
-        
+
         logger.debug("Batch job_details: fetching %d jobs", len(job_ids))
         all_jobs = []
         for idx, jid in enumerate(job_ids):
@@ -464,18 +466,23 @@ async def _fetch_internal(
                 logger.debug("Job %s scraped successfully", jid)
             except Exception as e:
                 logger.warning("Failed to scrape job %s: %s", jid, e)
-                all_jobs.append({
-                    "job_id": jid,
-                    "url": f"https://www.linkedin.com/jobs/view/{jid}/",
-                    "sections": {},
-                    "section_errors": {"job_posting": {"error": str(e)}},
-                })
+                all_jobs.append(
+                    {
+                        "job_id": jid,
+                        "url": f"https://www.linkedin.com/jobs/view/{jid}/",
+                        "sections": {},
+                        "section_errors": {"job_posting": {"error": str(e)}},
+                    }
+                )
             # Small delay between jobs to avoid rate limiting
             if idx < len(job_ids) - 1:
                 await asyncio.sleep(1)
 
-        logger.debug("Batch job_details complete: %d jobs fetched, %d with content", 
-                     len(all_jobs), sum(1 for j in all_jobs if j.get("sections")))
+        logger.debug(
+            "Batch job_details complete: %d jobs fetched, %d with content",
+            len(all_jobs),
+            sum(1 for j in all_jobs if j.get("sections")),
+        )
         return {"jobs": all_jobs, "sections": {}, "url": "batch://job_details"}
 
     if tool_name in extractor_methods:
@@ -492,8 +499,6 @@ async def _fetch_internal(
         from linkedin_mcp_server.tools.saved_jobs import (
             _parse_saved_job_card_text,
             _extract_job_id,
-            decode_cursor,
-            build_paginated_response,
         )
 
         logger.debug("Starting saved_jobs multi-page fetch")
@@ -526,7 +531,9 @@ async def _fetch_internal(
                 row = rows.nth(idx)
                 anchor = row.locator("a[href*='/jobs/view/']").first
                 href = (
-                    await anchor.get_attribute("href") if await anchor.count() > 0 else None
+                    await anchor.get_attribute("href")
+                    if await anchor.count() > 0
+                    else None
                 )
                 if href and href.startswith("/"):
                     href = f"https://www.linkedin.com{href}"
@@ -553,7 +560,9 @@ async def _fetch_internal(
 
             # LinkedIn paginates by 10 items; check for next button in DOM
             try:
-                next_btn = page.locator('button:has-text("Next"), a:has-text("Next"), button[aria-label*="next"], a[aria-label*="next"]')
+                next_btn = page.locator(
+                    'button:has-text("Next"), a:has-text("Next"), button[aria-label*="next"], a[aria-label*="next"]'
+                )
                 has_next = await next_btn.count() > 0
                 logger.debug("Page %d has_next button check: %s", page_num, has_next)
             except Exception:
@@ -566,7 +575,11 @@ async def _fetch_internal(
                 logger.debug("No more jobs, ending pagination")
                 break
 
-        logger.debug("Saved_jobs fetch complete: %d jobs across %d pages", len(all_jobs), page_num - 1)
+        logger.debug(
+            "Saved_jobs fetch complete: %d jobs across %d pages",
+            len(all_jobs),
+            page_num - 1,
+        )
         return {
             "jobs": all_jobs,
             "sections": {},
@@ -759,7 +772,13 @@ def register_export_tools(
             )
         db = _resolve_db_path(db_path)
 
-        logger.debug("export_to_db called: tool=%s, db=%s, table=%s, refresh=%s", tool_name, db, table_name, refresh)
+        logger.debug(
+            "export_to_db called: tool=%s, db=%s, table=%s, refresh=%s",
+            tool_name,
+            db,
+            table_name,
+            refresh,
+        )
 
         # Check cache
         with sqlite3.connect(db) as conn:
@@ -789,13 +808,27 @@ def register_export_tools(
             logger.debug("Extractor obtained successfully")
 
             # Call the right scraper logic
-            logger.debug("Calling _fetch_internal for %s with params: %s", tool_name, tool_params)
+            logger.debug(
+                "Calling _fetch_internal for %s with params: %s", tool_name, tool_params
+            )
             try:
-                raw_result = await _fetch_internal(tool_name, extractor, tool_params, ctx)
+                raw_result = await _fetch_internal(
+                    tool_name, extractor, tool_params, ctx
+                )
             except Exception as e:
-                logger.error("Scraping failed for %s: %s: %s", tool_name, type(e).__name__, e, exc_info=True)
+                logger.error(
+                    "Scraping failed for %s: %s: %s",
+                    tool_name,
+                    type(e).__name__,
+                    e,
+                    exc_info=True,
+                )
                 raise
-            logger.debug("Raw result received: %d keys: %s", len(raw_result), list(raw_result.keys()))
+            logger.debug(
+                "Raw result received: %d keys: %s",
+                len(raw_result),
+                list(raw_result.keys()),
+            )
 
             # Normalize to rows
             normalizer = _NORMALIZERS[tool_name]
@@ -804,7 +837,9 @@ def register_export_tools(
 
             # Write to DB
             if rows:
-                logger.debug("Creating table %s and inserting %d rows", table_name, len(rows))
+                logger.debug(
+                    "Creating table %s and inserting %d rows", table_name, len(rows)
+                )
                 columns = _create_table(conn, table_name, rows[0])
                 count = _insert_rows(conn, table_name, rows)
                 logger.debug("Inserted %d rows into %s", count, table_name)

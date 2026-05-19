@@ -67,17 +67,25 @@ def _make_saved_jobs_page(jobs: list[tuple[str, str, str, str]]) -> MagicMock:
         def make_anchor_locator(al=anchor_locator):
             return al
 
-        row_loc.locator = MagicMock(side_effect=lambda s, al=anchor_locator: al if "jobs/view" in s else MagicMock())
+        row_loc.locator = MagicMock(
+            side_effect=lambda s, al=anchor_locator: (
+                al if "jobs/view" in s else MagicMock()
+            )
+        )
         rows_data.append(row_loc)
 
     rows_locator = MagicMock()
     rows_locator.count = AsyncMock(return_value=len(rows_data))
-    rows_locator.nth = MagicMock(side_effect=lambda i: rows_data[i] if i < len(rows_data) else MagicMock())
+    rows_locator.nth = MagicMock(
+        side_effect=lambda i: rows_data[i] if i < len(rows_data) else MagicMock()
+    )
 
     # No "Next" button for simplicity
     next_locator = MagicMock()
     next_locator.count = AsyncMock(return_value=0)
-    page.locator = MagicMock(side_effect=lambda s: next_locator if "Next" in s else rows_locator)
+    page.locator = MagicMock(
+        side_effect=lambda s: next_locator if "Next" in s else rows_locator
+    )
 
     return page
 
@@ -509,10 +517,12 @@ class TestExportToDbIntegration:
         try:
             db = "test.db"
             mock_extractor = _setup_mock_extractor({})
-            mock_extractor.page = _make_saved_jobs_page([
-                ("1", "SWE", "Google", "SF"),
-                ("2", "MLE", "Meta", "NY"),
-            ])
+            mock_extractor.page = _make_saved_jobs_page(
+                [
+                    ("1", "SWE", "Google", "SF"),
+                    ("2", "MLE", "Meta", "NY"),
+                ]
+            )
 
             async def _goto_and_check(page, url):
                 pass
@@ -562,11 +572,13 @@ class TestExportToDbIntegration:
                 page_num[0] += 1
 
             mock_extractor = _setup_mock_extractor({})
-            mock_extractor.page = _make_saved_jobs_page([
-                ("1", "Job1", "A", "X"),
-                ("2", "Job2", "B", "Y"),
-                ("3", "Job3", "C", "Z"),
-            ])
+            mock_extractor.page = _make_saved_jobs_page(
+                [
+                    ("1", "Job1", "A", "X"),
+                    ("2", "Job2", "B", "Y"),
+                    ("3", "Job3", "C", "Z"),
+                ]
+            )
 
             monkeypatch = pytest.MonkeyPatch()
             monkeypatch.setattr(
@@ -645,7 +657,9 @@ class TestExportToDbIntegration:
                 assert rows[0][0] == "111"
                 assert "Details for 111" in rows[0][1]
 
-            scrape_calls = [call[1]["job_id"] for call in mock_extractor.scrape_job.call_args_list]
+            scrape_calls = [
+                call[1]["job_id"] for call in mock_extractor.scrape_job.call_args_list
+            ]
             assert scrape_calls == ["111", "222", "333"]
 
             monkeypatch.undo()

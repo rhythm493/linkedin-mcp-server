@@ -17,15 +17,6 @@ Through this LinkedIn MCP server, AI assistants like Claude can connect to your 
 [![Install MCP Bundle](https://img.shields.io/badge/Claude_Desktop_MCPB-d97757?style=for-the-badge&logo=anthropic)](#-claude-desktop-mcp-bundle-formerly-dxt)
 [![Development](https://img.shields.io/badge/Development-Local-ffdc53?style=for-the-badge&logo=python&logoColor=ffdc53)](#-local-setup-develop--contribute)
 
-> [!IMPORTANT]
-> **FAQ**
->
-> **Is this safe to use? Will I get banned?**
-> This tool controls a real browser session; it doesn't exploit undocumented APIs or bypass authentication. That said, LinkedIn's TOS prohibit automated tools. With normal usage (not bulk scraping!) you're not risking a ban. So far, no users have been banned for using this MCP. If you encounter any issues, [open an issue](https://github.com/rhythm493/linkedin-mcp-server/issues).
->
-> **What if my agents execute too many actions?**
-> LinkedIn may send you a warning about automated tool usage. If that happens, reduce your automation volume. This MCP executes tool calls sequentially via a queue but has no built-in rate limits. Prompt your agents responsibly.
-
 | Tool | Description | Status |
 |------|-------------|--------|
 | `get_person_profile` | Get profile info with explicit section selection (experience, education, interests, honors, languages, certifications, skills, projects, contact_info, posts) | working |
@@ -362,6 +353,15 @@ uv run -m linkedin_mcp_server --transport streamable-http --host 127.0.0.1 --por
 
 <br/>
 <br/>
+
+> [!IMPORTANT]
+> **FAQ**
+>
+> **Is this safe to use? Will I get banned?**
+> This tool controls a real browser session; it doesn't exploit undocumented APIs or bypass authentication. That said, LinkedIn's TOS prohibit automated tools. With normal usage (not bulk scraping!) you're not risking a ban. So far, no users have been banned for using this MCP. If you encounter any issues, [open an issue](https://github.com/rhythm493/linkedin-mcp-server/issues).
+>
+> **What if my agents execute too many actions?**
+> LinkedIn may send you a warning about automated tool usage. If that happens, reduce your automation volume. This MCP executes tool calls sequentially via a queue but has no built-in rate limits. Prompt your agents responsibly.
 
 ## Acknowledgements
 

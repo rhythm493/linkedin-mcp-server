@@ -584,9 +584,126 @@ class TestJobTools:
         register_job_tools(mcp)
 
         tool_fn = await get_tool_fn(mcp, "get_job_details")
-        result = await tool_fn("12345", mock_context, extractor=mock_extractor)
+        result = await tool_fn(
+            job_id="12345", ctx=mock_context, extractor=mock_extractor
+        )
         assert "job_posting" in result["sections"]
         assert "pages_visited" not in result
+
+    async def test_get_job_details_batch(self, mock_context):
+        """Batch get_job_details scrapes multiple jobs in parallel."""
+        mock_ctx_obj = MagicMock()
+        mock_ctx_obj.new_page = AsyncMock()
+
+        from unittest.mock import PropertyMock
+
+        mock_extractor = _make_mock_extractor({})
+        page_mock = MagicMock()
+        page_mock.context = mock_ctx_obj
+        type(mock_extractor).page = PropertyMock(return_value=page_mock)
+
+        async def mock_scrape(page, jid):
+            return {
+                "url": f"https://www.linkedin.com/jobs/view/{jid}/",
+                "sections": {"job_posting": f"Details for {jid}"},
+            }
+
+        import linkedin_mcp_server.tools._job_scrape as _js_mod
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(_js_mod, "scrape_job_on_page", mock_scrape)
+
+        from linkedin_mcp_server.tools.job import register_job_tools
+
+        mcp = FastMCP("test")
+        register_job_tools(mcp)
+
+        tool_fn = await get_tool_fn(mcp, "get_job_details")
+        result = await tool_fn(
+            job_ids=["111", "222", "333"],
+            ctx=mock_context,
+            extractor=mock_extractor,
+        )
+
+        assert "jobs" in result
+        assert len(result["jobs"]) == 3
+        assert result["jobs"][0]["job_id"] == "111"
+        assert "Details for 111" in result["jobs"][0]["sections"]["job_posting"]
+        assert result["jobs"][1]["job_id"] == "222"
+        assert result["jobs"][2]["job_id"] == "333"
+
+        monkeypatch.undo()
+
+    async def test_get_job_details_batch_with_errors(self, mock_context):
+        """Batch mode handles partial failures without crashing."""
+        mock_ctx_obj = MagicMock()
+        mock_ctx_obj.new_page = AsyncMock()
+
+        from unittest.mock import PropertyMock
+
+        mock_extractor = _make_mock_extractor({})
+        page_mock = MagicMock()
+        page_mock.context = mock_ctx_obj
+        type(mock_extractor).page = PropertyMock(return_value=page_mock)
+
+        async def mock_scrape_partial(page, jid):
+            if jid == "222":
+                raise RuntimeError("Page load failed")
+            return {
+                "url": f"https://www.linkedin.com/jobs/view/{jid}/",
+                "sections": {"job_posting": f"Details for {jid}"},
+            }
+
+        import linkedin_mcp_server.tools._job_scrape as _js_mod
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(_js_mod, "scrape_job_on_page", mock_scrape_partial)
+
+        from linkedin_mcp_server.tools.job import register_job_tools
+
+        mcp = FastMCP("test")
+        register_job_tools(mcp)
+
+        tool_fn = await get_tool_fn(mcp, "get_job_details")
+        result = await tool_fn(
+            job_ids=["111", "222", "333"],
+            ctx=mock_context,
+            extractor=mock_extractor,
+        )
+
+        assert "jobs" in result
+        assert len(result["jobs"]) == 3
+        # 111 succeeded
+        assert result["jobs"][0]["job_id"] == "111"
+        assert result["jobs"][0]["sections"]["job_posting"] == "Details for 111"
+        # 222 failed — should have section_errors
+        assert result["jobs"][1]["job_id"] == "222"
+        assert not result["jobs"][1]["sections"]
+        assert "job_posting" in result["jobs"][1]["section_errors"]
+        # 333 succeeded
+        assert result["jobs"][2]["job_id"] == "333"
+        assert result["jobs"][2]["sections"]["job_posting"] == "Details for 333"
+
+        monkeypatch.undo()
+
+    async def test_get_job_details_batch_requires_list(self, mock_context):
+        """Batch mode rejects empty list and validates at least one param."""
+        mock_extractor = _make_mock_extractor({})
+
+        from linkedin_mcp_server.tools.job import register_job_tools
+
+        mcp = FastMCP("test")
+        register_job_tools(mcp)
+
+        tool_fn = await get_tool_fn(mcp, "get_job_details")
+
+        with pytest.raises(ValueError, match="Provide either job_id or job_ids"):
+            await tool_fn(ctx=mock_context, extractor=mock_extractor)
+
+        with pytest.raises(ValueError, match="non-empty"):
+            await tool_fn(
+                job_ids=[], ctx=mock_context, extractor=mock_extractor
+            )
 
     async def test_search_jobs(self, mock_context):
         expected = {

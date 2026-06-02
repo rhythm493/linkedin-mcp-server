@@ -4,6 +4,7 @@ LinkedIn job scraping tools with search and detail extraction.
 Uses innerText extraction for resilient job data capture.
 """
 
+import asyncio
 import logging
 from typing import Annotated, Any
 
@@ -31,25 +32,124 @@ def register_job_tools(
         exclude_args=["extractor"],
     )
     async def get_job_details(
-        job_id: str,
         ctx: Context,
+        job_id: Annotated[
+            str | None,
+            Field(
+                default=None,
+                description="LinkedIn job ID (e.g., '4252026496') for a single job lookup.",
+            ),
+        ] = None,
+        job_ids: Annotated[
+            list[str] | None,
+            Field(
+                default=None,
+                description="List of LinkedIn job IDs for batch lookup (e.g., ['4252026496', '3856789012']). Jobs are scraped in parallel.",
+            ),
+        ] = None,
         extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
-        Get job details for a specific job posting on LinkedIn.
+        Get job details for one or more job postings on LinkedIn.
+
+        Provide either ``job_id`` for a single job or ``job_ids`` for batch
+        parallel scraping. At least one is required.
 
         Args:
-            job_id: LinkedIn job ID (e.g., "4252026496", "3856789012")
             ctx: FastMCP context for progress reporting
+            job_id: LinkedIn job ID (e.g., "4252026496") for single job lookup.
+            job_ids: List of LinkedIn job IDs for batch parallel scraping.
 
         Returns:
-            Dict with url, sections (name -> raw text), and optional references.
+            Single mode: dict with url, sections (name -> raw text), and optional references.
+            Batch mode: dict with ``jobs`` (list of per-job results) and top-level metadata.
             The LLM should parse the raw text to extract job details.
         """
         try:
             extractor = extractor or await get_ready_extractor(
                 ctx, tool_name="get_job_details"
             )
+
+            # Batch mode
+            if job_ids is not None:
+                if not job_ids:
+                    raise ValueError("job_ids must be a non-empty list")
+                if job_id is not None:
+                    raise ValueError(
+                        "Provide either job_id or job_ids, not both"
+                    )
+
+                logger.info("Batch scraping %d jobs in parallel", len(job_ids))
+
+                await ctx.report_progress(
+                    progress=0,
+                    total=100,
+                    message=f"Starting batch scrape ({len(job_ids)} jobs)",
+                )
+
+                from linkedin_mcp_server.tools._job_scrape import scrape_job_on_page
+
+                context = extractor.page.context
+                semaphore = asyncio.Semaphore(10)
+
+                async def _scrape_one(jid: str) -> dict:
+                    async with semaphore:
+                        page = await context.new_page()
+                        try:
+                            return await scrape_job_on_page(page, jid)
+                        except Exception as e:
+                            logger.warning("Failed to scrape job %s: %s", jid, e)
+                            return {
+                                "url": f"https://www.linkedin.com/jobs/view/{jid}/",
+                                "sections": {},
+                                "section_errors": {
+                                    "job_posting": {"error": str(e)}
+                                },
+                            }
+                        finally:
+                            await page.close()
+
+                tasks = [_scrape_one(jid) for jid in job_ids]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                all_jobs: list[dict] = []
+                for jid, result in zip(job_ids, results):
+                    if isinstance(result, Exception):
+                        all_jobs.append(
+                            {
+                                "url": f"https://www.linkedin.com/jobs/view/{jid}/",
+                                "sections": {},
+                                "section_errors": {
+                                    "job_posting": {"error": str(result)}
+                                },
+                            }
+                        )
+                    elif isinstance(result, dict):
+                        result["job_id"] = jid
+                        all_jobs.append(result)
+
+                logger.debug(
+                    "Batch job_details complete: %d jobs, %d with content",
+                    len(all_jobs),
+                    sum(1 for j in all_jobs if j.get("sections")),
+                )
+
+                await ctx.report_progress(
+                    progress=100,
+                    total=100,
+                    message=f"Batch scrape complete ({len(all_jobs)} jobs)",
+                )
+
+                return {
+                    "jobs": all_jobs,
+                    "sections": {},
+                    "url": "batch://job_details",
+                }
+
+            # Single mode
+            if job_id is None:
+                raise ValueError("Provide either job_id or job_ids")
+
             logger.info("Scraping job: %s", job_id)
 
             await ctx.report_progress(

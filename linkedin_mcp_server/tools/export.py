@@ -388,7 +388,7 @@ def _build_extractor_params(tool_name: str, tool_params: dict) -> dict:
             "easy_apply",
             "sort_by",
         ],
-        "get_job_details": ["job_id"],
+        "get_job_details": ["job_id", "job_ids"],
         "get_person_profile": [
             "linkedin_username",
             "sections",

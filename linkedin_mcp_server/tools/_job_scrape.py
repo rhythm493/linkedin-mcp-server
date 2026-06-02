@@ -13,6 +13,7 @@ from patchright.async_api import Page, TimeoutError as PlaywrightTimeoutError
 
 from linkedin_mcp_server.core.utils import (
     detect_rate_limit,
+    expand_collapsible_sections,
     handle_modal_close,
     scroll_to_bottom,
 )
@@ -102,6 +103,9 @@ async def _extract_job_page(
         )
     except PlaywrightTimeoutError:
         logger.debug("Job content did not hydrate on %s", url)
+
+    # Expand collapsed sections (Show more buttons) before extracting text
+    await expand_collapsible_sections(page)
 
     # Scroll to trigger lazy loading
     await scroll_to_bottom(page, pause_time=0.5, max_scrolls=max_scrolls)

@@ -1,11 +1,14 @@
 """Tests for core utility functions (rate-limit detection, scrolling, modals)."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from linkedin_mcp_server.core.exceptions import RateLimitError
-from linkedin_mcp_server.core.utils import detect_rate_limit
+from linkedin_mcp_server.core.utils import (
+    detect_rate_limit,
+    expand_collapsible_sections,
+)
 
 
 @pytest.fixture
@@ -109,3 +112,96 @@ class TestDetectRateLimit:
 
         mock_page.locator = MagicMock(side_effect=locator_side_effect)
         await detect_rate_limit(mock_page)
+
+
+class TestExpandCollapsibleSections:
+    """Tests for the locale-independent collapsible section expansion utility."""
+
+    @pytest.fixture
+    def mock_page(self):
+        page = MagicMock()
+
+        def make_button(count=0, visible=False):
+            btn = MagicMock()
+            btn.count = AsyncMock(return_value=count)
+            btn.is_visible = AsyncMock(return_value=visible)
+            btn.scroll_into_view_if_needed = AsyncMock()
+            btn.click = AsyncMock()
+            btn.first = btn
+            return btn
+
+        page.locator = MagicMock(return_value=make_button(count=0))
+        return page
+
+    async def test_clicks_until_button_gone(self, mock_page):
+        """Click buttons until count reaches 0."""
+        btn = MagicMock()
+        btn.count = AsyncMock(side_effect=[1, 1, 0])
+        btn.is_visible = AsyncMock(return_value=True)
+        btn.scroll_into_view_if_needed = AsyncMock()
+        btn.click = AsyncMock()
+        btn.first = btn
+
+        mock_page.locator = MagicMock(return_value=btn)
+
+        with patch(
+            "linkedin_mcp_server.core.utils.asyncio.sleep",
+            new_callable=AsyncMock,
+        ):
+            await expand_collapsible_sections(mock_page)
+
+        assert btn.click.await_count == 2
+
+    async def test_no_button_skips_immediately(self, mock_page):
+        """When no button is present, exit immediately."""
+        btn = MagicMock()
+        btn.count = AsyncMock(return_value=0)
+        btn.click = AsyncMock()
+        btn.first = btn
+
+        mock_page.locator = MagicMock(return_value=btn)
+
+        with patch(
+            "linkedin_mcp_server.core.utils.asyncio.sleep",
+            new_callable=AsyncMock,
+        ):
+            await expand_collapsible_sections(mock_page)
+
+        btn.click.assert_not_awaited()
+
+    async def test_invisible_button_skips(self, mock_page):
+        """When button exists but is not visible, exit immediately."""
+        btn = MagicMock()
+        btn.count = AsyncMock(return_value=1)
+        btn.is_visible = AsyncMock(return_value=False)
+        btn.click = AsyncMock()
+        btn.first = btn
+
+        mock_page.locator = MagicMock(return_value=btn)
+
+        with patch(
+            "linkedin_mcp_server.core.utils.asyncio.sleep",
+            new_callable=AsyncMock,
+        ):
+            await expand_collapsible_sections(mock_page)
+
+        btn.click.assert_not_awaited()
+
+    async def test_respects_max_clicks_budget(self, mock_page):
+        """When button never disappears, stop after max_clicks iterations."""
+        btn = MagicMock()
+        btn.count = AsyncMock(return_value=1)
+        btn.is_visible = AsyncMock(return_value=True)
+        btn.scroll_into_view_if_needed = AsyncMock()
+        btn.click = AsyncMock()
+        btn.first = btn
+
+        mock_page.locator = MagicMock(return_value=btn)
+
+        with patch(
+            "linkedin_mcp_server.core.utils.asyncio.sleep",
+            new_callable=AsyncMock,
+        ):
+            await expand_collapsible_sections(mock_page, max_clicks=3)
+
+        assert btn.click.await_count == 3

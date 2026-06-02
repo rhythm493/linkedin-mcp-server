@@ -200,3 +200,36 @@ def backoff_with_jitter(
 async def detect_rate_limit_post_action(page: Page) -> None:
     await asyncio.sleep(2)
     await detect_rate_limit(page)
+
+
+async def expand_collapsible_sections(page: Page, max_clicks: int = 5) -> None:
+    """Click all collapsed ``aria-expanded="false"`` buttons inside ``<main>``.
+
+    LinkedIn collapses long content sections (e.g. job descriptions, experience
+    details) behind a toggle button.  Clicking them reveals the full text.
+    The ``aria-expanded`` attribute is locale-independent, so this works for
+    any LinkedIn locale.
+
+    Args:
+        page: Patchright page object.
+        max_clicks: Maximum consecutive clicks.  The method exits early when
+            no button matches or becomes visible, so this is a safe cap.
+    """
+    for i in range(max_clicks):
+        button = page.locator("main button[aria-expanded='false']")
+        try:
+            if await button.count() == 0:
+                logger.debug("No collapsed sections after %d clicks", i)
+                break
+            target = button.first
+            if not await target.is_visible():
+                break
+            await target.scroll_into_view_if_needed(timeout=2000)
+            await target.click(timeout=2000)
+            await asyncio.sleep(1.0)
+        except PlaywrightTimeoutError:
+            logger.debug("Collapsible section click timed out after %d clicks", i)
+            break
+        except Exception as e:
+            logger.debug("Collapsible section click failed: %s", e)
+            break

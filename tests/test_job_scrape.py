@@ -1,6 +1,6 @@
 """Tests for standalone job scraping on a given page."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -89,3 +89,17 @@ async def test_scrape_job_exception_during_extraction():
     result = await scrape_job_on_page(page, "123456")
     assert result["sections"] == {}
     assert "error" in result["section_errors"]["job_posting"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_job_expands_collapsible_sections():
+    """Parallel path calls expand_collapsible_sections before extraction."""
+    page = _make_mock_page(text="Senior Engineer at Google\nSan Francisco")
+    with patch(
+        "linkedin_mcp_server.tools._job_scrape.expand_collapsible_sections",
+        new_callable=AsyncMock,
+    ) as mock_expand:
+        result = await scrape_job_on_page(page, "123456")
+
+    mock_expand.assert_awaited_once()
+    assert "job_posting" in result["sections"]

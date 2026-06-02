@@ -26,6 +26,7 @@ from linkedin_mcp_server.debug_utils import stabilize_navigation
 from linkedin_mcp_server.error_diagnostics import build_issue_diagnostics
 from linkedin_mcp_server.core.utils import (
     detect_rate_limit,
+    expand_collapsible_sections,
     handle_modal_close,
     scroll_job_sidebar,
     scroll_to_bottom,
@@ -1215,46 +1216,22 @@ class LinkedInExtractor:
         # panel loads asynchronously. Wait until the panel replaces the sidebar.
         # The sidebar placeholder starts with "Load more" or "More profiles for you".
         is_details = "/details/" in url
+        is_job = "/jobs/view/" in url
         if is_details:
             try:
                 await self._page.wait_for_function(
                     """() => {
                         const main = document.querySelector('main');
                         if (!main) return false;
-                        const text = main.innerText.trimStart();
-                        return !text.startsWith('Load more')
-                            && !text.startsWith('More profiles for you')
-                            && !text.startsWith('Explore premium profiles');
+                        return main.innerText.length > 200;
                     }""",
                     timeout=10000,
                 )
             except PlaywrightTimeoutError:
-                logger.debug("Detail section content did not appear on %s", url)
+                logger.debug("Detail/section content did not appear on %s", url)
 
-        # Detail pages paginate with a "Show more" button inside <main>, not scroll.
-        # Click it until it disappears or the budget runs out.
-        if is_details:
-            max_clicks = max_scrolls if max_scrolls is not None else 5
-            for i in range(max_clicks):
-                button = self._page.locator("main button").filter(
-                    has_text=re.compile(r"^Show (more|all)\b", re.IGNORECASE)
-                )
-                try:
-                    if await button.count() == 0:
-                        logger.debug("No 'Show more' button after %d clicks", i)
-                        break
-                    target = button.first
-                    if not await target.is_visible():
-                        break
-                    await target.scroll_into_view_if_needed(timeout=2000)
-                    await target.click(timeout=2000)
-                    await asyncio.sleep(1.0)
-                except PlaywrightTimeoutError:
-                    logger.debug("Show more click timed out after %d clicks", i)
-                    break
-                except Exception as e:
-                    logger.debug("Show more click failed: %s", e)
-                    break
+        if is_details or is_job:
+            await expand_collapsible_sections(self._page)
 
         # Scroll to trigger lazy loading
         if is_activity:

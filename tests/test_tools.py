@@ -701,9 +701,7 @@ class TestJobTools:
             await tool_fn(ctx=mock_context, extractor=mock_extractor)
 
         with pytest.raises(ValueError, match="non-empty"):
-            await tool_fn(
-                job_ids=[], ctx=mock_context, extractor=mock_extractor
-            )
+            await tool_fn(job_ids=[], ctx=mock_context, extractor=mock_extractor)
 
     async def test_search_jobs(self, mock_context):
         expected = {

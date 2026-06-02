@@ -75,9 +75,7 @@ def register_job_tools(
                 if not job_ids:
                     raise ValueError("job_ids must be a non-empty list")
                 if job_id is not None:
-                    raise ValueError(
-                        "Provide either job_id or job_ids, not both"
-                    )
+                    raise ValueError("Provide either job_id or job_ids, not both")
 
                 logger.info("Batch scraping %d jobs in parallel", len(job_ids))
 
@@ -102,9 +100,7 @@ def register_job_tools(
                             return {
                                 "url": f"https://www.linkedin.com/jobs/view/{jid}/",
                                 "sections": {},
-                                "section_errors": {
-                                    "job_posting": {"error": str(e)}
-                                },
+                                "section_errors": {"job_posting": {"error": str(e)}},
                             }
                         finally:
                             await page.close()

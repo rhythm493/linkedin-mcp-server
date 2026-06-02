@@ -2250,37 +2250,75 @@ class LinkedInExtractor:
     async def _resolve_conversation_thread_urls(self, display_name: str) -> list[str]:
         """Return all thread URLs whose participant name matches display_name.
 
-        Uses URL-driven search (`/messaging/?searchTerm=…`) plus click-to-capture
+        Enumerates the plain messaging inbox (`/messaging/`) plus click-to-capture
         because LinkedIn renders the messaging sidebar with no anchor hrefs, no
         data-thread attributes, and no embedded URNs — clicking each row and
         reading the resulting SPA URL is the only available extraction path.
+        The inbox is used rather than `?searchTerm=` because LinkedIn's
+        messaging search frequently returns "We didn't find anything" for a
+        participant whose thread is plainly present in the inbox (issue #434).
+        ``name_filter`` is passed to the enumerator so only the matching row is
+        clicked — clicking a row may mark it read, so unrelated threads stay
+        untouched.
 
         Matches by case-insensitive equality on the cleaned participant name
         derived from the row's aria-label, which tolerates duplicate threads
         with the same participant. Browser locale is forced to en-US so the
         verb prefix strips reliably; in any other locale the comparison fails
         cleanly with "Could not find a conversation" rather than returning
-        a wrong-thread match.
+        a wrong-thread match. If the inbox scan finds nothing (a thread buried
+        below the scrolled rows), it falls back to the `?searchTerm=` search as
+        a last resort.
+
+        For a participant with multiple threads, the returned set — and thus
+        ``index`` selection in the caller — covers the threads visible in the
+        scanned inbox; the search fallback only runs when the inbox scan is
+        empty. Open a buried duplicate thread directly via ``thread_id``
+        (enumerate IDs with ``search_conversations``).
         """
-        search_url = (
+        target_name = display_name.strip().lower()
+
+        def _match(refs: list[Reference]) -> list[str]:
+            # name_filter already gated the clicks; this enforces the same
+            # exact-equality match Python-side and tolerates duplicate threads.
+            return [
+                f"https://www.linkedin.com{ref['url']}"
+                for ref in refs
+                if (ref.get("text") or "").strip().lower() == target_name
+            ]
+
+        # Primary path: enumerate the plain inbox. Reliable for the recent
+        # threads that the verify-after-send workflow needs (issue #434).
+        await self._navigate_to_page("https://www.linkedin.com/messaging/")
+        await detect_rate_limit(self._page)
+        await self._wait_for_main_text(log_context="Messaging inbox")
+        await handle_modal_close(self._page)
+        await self._scroll_main_scrollable_region(
+            position="bottom", attempts=2, pause_time=0.5
+        )
+        urls = _match(
+            await self._extract_conversation_thread_refs(
+                limit=None, context="inbox", name_filter=display_name
+            )
+        )
+        if urls:
+            return urls
+
+        # Fallback: LinkedIn's messaging search. Unreliable (often returns
+        # "We didn't find anything" even for present threads, see #434), so it
+        # runs only when the inbox scan came up empty — e.g. a thread buried
+        # below the scrolled inbox window.
+        await self._navigate_to_page(
             f"https://www.linkedin.com/messaging/?searchTerm={quote_plus(display_name)}"
         )
-        await self._navigate_to_page(search_url)
         await detect_rate_limit(self._page)
         await handle_modal_close(self._page)
         await self._wait_for_main_text(log_context="Messaging search results")
-
-        refs = await self._extract_conversation_thread_refs(
-            limit=None, context="search"
+        return _match(
+            await self._extract_conversation_thread_refs(
+                limit=None, context="search", name_filter=display_name
+            )
         )
-        target_name = display_name.strip().lower()
-        urls: list[str] = []
-        for ref in refs:
-            ref_text = (ref.get("text") or "").strip().lower()
-            if not ref_text or ref_text != target_name:
-                continue
-            urls.append(f"https://www.linkedin.com{ref['url']}")
-        return urls
 
     async def _open_conversation_by_username(
         self, linkedin_username: str, index: int = 0
@@ -2936,7 +2974,7 @@ class LinkedInExtractor:
         )
 
     async def _extract_conversation_thread_refs(
-        self, limit: int | None, context: str
+        self, limit: int | None, context: str, *, name_filter: str | None = None
     ) -> list[Reference]:
         """Click each visible conversation item and capture the thread URL.
 
@@ -2949,6 +2987,12 @@ class LinkedInExtractor:
         ``data-thread-id`` attributes, and no embedded URNs — clicking each
         row and reading the SPA URL is the only reliable extraction path.
         Pass ``limit=None`` to capture every visible row.
+
+        When ``name_filter`` is provided, every row's aria-label is still read
+        but only rows whose cleaned participant name equals it (case-insensitive)
+        are clicked; non-matching rows are skipped without clicking. Clicking a
+        row may mark it as read, so the filter keeps the read-marking side effect
+        scoped to the requested participant when resolving by username.
         """
         # The conversation list mounts after main text settles, so wait
         # explicitly for at least one label rather than relying on
@@ -2985,17 +3029,28 @@ class LinkedInExtractor:
         # The aria-label value flows through unmodified — Python strips any
         # known locale prefix to derive a clean participant name for refs.
         conversations: list[dict[str, str]] = await self._page.evaluate(
-            """async ({ limit }) => {
+            """async ({ limit, nameFilter }) => {
                 const labels = Array.from(document.querySelectorAll(
                     'main li label[aria-label]'
                 ));
                 const cap = (limit == null)
                     ? labels.length
                     : Math.min(labels.length, limit);
+                // Normalize the optional participant filter the same way the
+                // Python prefix-strip does (en-US "Select conversation with"
+                // verb, collapsed whitespace) so the JS-side comparison
+                // matches. Only the matching row is clicked — clicking marks a
+                // row read, so unrelated threads must not be clicked.
+                const wanted = (nameFilter || '')
+                    .replace(/\\s+/g, ' ').trim().toLowerCase();
                 const results = [];
                 for (let i = 0; i < cap; i++) {
                     const label = labels[i];
                     const ariaLabel = label.getAttribute('aria-label') || '';
+                    const rowName = ariaLabel
+                        .replace(/^Select conversation with\\s+/i, '')
+                        .replace(/\\s+/g, ' ').trim().toLowerCase();
+                    if (wanted && rowName !== wanted) continue;
                     const clickTarget = label.closest('li')
                         ?.querySelector('div[class*="listitem__link"]');
                     if (!clickTarget) continue;
@@ -3020,7 +3075,7 @@ class LinkedInExtractor:
                 }
                 return results;
             }""",
-            {"limit": limit},
+            {"limit": limit, "nameFilter": name_filter},
         )
         refs: list[Reference] = []
         for conv in conversations:
@@ -3062,9 +3117,9 @@ class LinkedInExtractor:
         ``search_conversations`` to enumerate thread IDs first if disambiguation
         by index is impractical.
 
-        Side effect when looked up by username: resolution searches LinkedIn's
-        messaging inbox for the participant's display name and click-visits
-        every matching row to capture its thread ID (no anchor hrefs or
+        Side effect when looked up by username: resolution enumerates the
+        messaging inbox and click-visits only the row(s) matching the
+        participant's display name to capture the thread ID (no anchor hrefs or
         thread-id attributes exist in the sidebar). Each visit selects the row
         in the LinkedIn UI and may mark it as read. Pass ``thread_id`` directly
         to skip this enumeration.

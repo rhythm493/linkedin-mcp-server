@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from typing import Any
 
 from fastmcp import Context, FastMCP
@@ -11,46 +10,12 @@ from linkedin_mcp_server.config.schema import DEFAULT_TOOL_TIMEOUT_SECONDS
 from linkedin_mcp_server.core.pagination import build_paginated_response, decode_cursor
 from linkedin_mcp_server.core.utils import detect_rate_limit_post_action
 from linkedin_mcp_server.tools._common import get_page, goto_and_check
+from linkedin_mcp_server.tools._saved_jobs_scrape import (
+    _extract_job_id,
+    parse_saved_jobs_page,
+)
 
 logger = logging.getLogger(__name__)
-
-_JOB_ID_RE = re.compile(r"/jobs/view/(\d+)")
-
-
-def _extract_job_id(job_url: str | None) -> str | None:
-    if not job_url:
-        return None
-    match = _JOB_ID_RE.search(job_url)
-    return match.group(1) if match else None
-
-
-def _parse_saved_job_card_text(
-    text: str, *, job_url: str | None
-) -> dict[str, Any] | None:
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if len(lines) < 2:
-        return None
-    title = lines[0]
-    # Skip ", Verified" badge if present
-    company_idx = 1
-    if lines[1].startswith(", Verified"):
-        company_idx = 2
-    company = lines[company_idx] if company_idx < len(lines) else None
-    location_idx = company_idx + 1
-    location = lines[location_idx] if location_idx < len(lines) else None
-    posting_date = None
-    for line in lines[location_idx:]:
-        if "ago" in line.lower() or re.match(r"\d{4}-\d{2}-\d{2}$", line):
-            posting_date = line
-            break
-    return {
-        "title": title,
-        "company": company,
-        "location": location,
-        "posting_date": posting_date,
-        "job_id": _extract_job_id(job_url),
-        "job_url": job_url,
-    }
 
 
 def register_saved_job_tools(
@@ -143,41 +108,7 @@ def register_saved_job_tools(
                 progress=0, total=100, message="Loading saved jobs"
             )
 
-        await goto_and_check(page_obj, url)
-        await asyncio.sleep(2)
-
-        rows = page_obj.locator("li, article, .job-card-container, [data-job-id]")
-        seen_ids: set[str] = set()
-        jobs: list[dict[str, Any]] = []
-        total_rows = await rows.count()
-
-        for idx in range(total_rows):
-            row = rows.nth(idx)
-            anchor = row.locator("a[href*='/jobs/view/']").first
-            href = (
-                await anchor.get_attribute("href") if await anchor.count() > 0 else None
-            )
-            if href and href.startswith("/"):
-                href = f"https://www.linkedin.com{href}"
-            if not href:
-                continue  # Skip nav/footer noise without job links
-
-            job_id = _extract_job_id(href)
-            if job_id and job_id in seen_ids:
-                continue  # Each job card has 2 duplicate links
-            if job_id:
-                seen_ids.add(job_id)
-
-            try:
-                text = await row.inner_text(timeout=1000)
-            except Exception:
-                continue
-            card = _parse_saved_job_card_text(text, job_url=href)
-            if card is None:
-                continue
-            jobs.append(card)
-            if len(jobs) >= safe_limit:
-                break
+        jobs, _ = await parse_saved_jobs_page(page_obj, url, limit=safe_limit)
 
         response = build_paginated_response(
             results=jobs,

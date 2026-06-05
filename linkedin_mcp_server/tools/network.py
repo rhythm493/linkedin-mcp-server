@@ -2,26 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from typing import Any
 
 from fastmcp import Context, FastMCP
 
 from linkedin_mcp_server.config.schema import DEFAULT_TOOL_TIMEOUT_SECONDS
 from linkedin_mcp_server.core.utils import detect_rate_limit_post_action
-from linkedin_mcp_server.tools._common import get_page, goto_and_check, parse_count
+from linkedin_mcp_server.tools._common import get_page, goto_and_check
+from linkedin_mcp_server.tools._pending_invitations_scrape import (
+    parse_pending_invitations_page,
+)
 
 logger = logging.getLogger(__name__)
-
-
-def _extract_mutual_connections(text: str) -> int | None:
-    match = re.search(r"([\d,.kKmM]+)\s+mutual", text, re.IGNORECASE)
-    return parse_count(match.group(1)) if match else None
-
-
-def _extract_name_headline(text: str) -> tuple[str, str]:
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    return (lines[0] if lines else "", lines[1] if len(lines) > 1 else "")
 
 
 def register_network_tools(
@@ -103,7 +95,6 @@ def register_network_tools(
         ctx: Context | None = None,
     ) -> dict[str, Any]:
         """List pending incoming LinkedIn invitations."""
-        safe_limit = max(1, min(limit, 100))
         page = await get_page(ctx, tool_name="get_pending_invitations")
 
         if ctx:
@@ -111,34 +102,7 @@ def register_network_tools(
                 progress=0, total=100, message="Loading invitation manager"
             )
 
-        await goto_and_check(
-            page, "https://www.linkedin.com/mynetwork/invitation-manager/"
-        )
-
-        invitations: list[dict[str, Any]] = []
-        rows = page.locator('a[href*="/in/"]')
-        total_rows = await rows.count()
-
-        for idx in range(total_rows):
-            row = rows.nth(idx)
-            try:
-                text = await row.inner_text(timeout=2000)
-                name, headline = _extract_name_headline(text)
-                href = await row.get_attribute("href")
-                if href and href.startswith("/"):
-                    href = f"https://www.linkedin.com{href}"
-                invitations.append(
-                    {
-                        "name": name,
-                        "profile_url": href,
-                        "headline": headline,
-                        "mutual_connections": _extract_mutual_connections(text),
-                    }
-                )
-                if len(invitations) >= safe_limit:
-                    break
-            except Exception:
-                continue
+        invitations = await parse_pending_invitations_page(page, limit=limit)
 
         if ctx:
             await ctx.report_progress(

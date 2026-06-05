@@ -14,9 +14,8 @@ import re
 import sqlite3
 import time
 from datetime import datetime, timezone
-from typing import Annotated, Any, Callable
+from typing import Annotated, Any, Callable, Literal
 
-import asyncio
 
 from fastmcp import Context, FastMCP
 from pydantic import BaseModel, Field
@@ -174,13 +173,35 @@ def _infer_sqlite_type(value: Any) -> str:
 
 
 def _create_table(
-    conn: sqlite3.Connection, table: str, row: dict[str, Any]
+    conn: sqlite3.Connection,
+    table: str,
+    row: dict[str, Any],
+    *,
+    mode: Literal["replace", "append"] = "replace",
 ) -> list[str]:
-    """CREATE TABLE from first row's keys. Returns column names."""
+    """CREATE TABLE from first row's keys. Returns column names.
+
+    Args:
+        mode: ``"replace"`` drops and recreates the table (default).
+              ``"append"`` preserves existing data and adds missing columns.
+    """
     cols = list(row.keys())
     col_defs = ", ".join(f'"{c}" {_infer_sqlite_type(row[c])}' for c in cols)
-    conn.execute(f'DROP TABLE IF EXISTS "{table}"')
-    conn.execute(f'CREATE TABLE "{table}" ({col_defs})')
+
+    if mode == "replace":
+        conn.execute(f'DROP TABLE IF EXISTS "{table}"')
+        conn.execute(f'CREATE TABLE "{table}" ({col_defs})')
+    else:
+        conn.execute(f'CREATE TABLE IF NOT EXISTS "{table}" ({col_defs})')
+        existing = {
+            r[1] for r in conn.execute(f'PRAGMA table_info("{table}")').fetchall()
+        }
+        for c in cols:
+            if c not in existing:
+                conn.execute(
+                    f'ALTER TABLE "{table}" ADD COLUMN "{c}" {_infer_sqlite_type(row[c])}'
+                )
+
     conn.commit()
     return cols
 
@@ -374,10 +395,13 @@ _NORMALIZERS: dict[str, Callable[..., list[dict]]] = {
 }
 
 
-def _build_extractor_params(tool_name: str, tool_params: dict) -> dict:
-    """Map tool params to the corresponding extractor method kwargs."""
-    mapping: dict[str, list[str]] = {
-        "search_jobs": [
+# ── Extractor method dispatch ────────────────────────────────────────────
+
+# Tools handled by extractor methods — (method_name, param_keys)
+_EXTRACTOR_METHODS: dict[str, tuple[str, list[str]]] = {
+    "search_jobs": (
+        "search_jobs",
+        [
             "keywords",
             "location",
             "max_pages",
@@ -388,320 +412,96 @@ def _build_extractor_params(tool_name: str, tool_params: dict) -> dict:
             "easy_apply",
             "sort_by",
         ],
-        "get_job_details": ["job_id", "job_ids"],
-        "get_person_profile": [
-            "linkedin_username",
-            "sections",
-            "max_scrolls",
-            "connection_filter",
-        ],
-        "get_my_profile": ["sections", "max_scrolls"],
-        "get_company_profile": ["company_slug", "sections"],
-        "get_company_posts": ["company_slug", "max_scrolls"],
-        "get_company_people": [
-            "company_name",
-            "title_keyword",
-            "limit",
-        ],
-        "get_feed": ["num_posts"],
-        "get_inbox": ["limit"],
-        "get_conversation": ["linkedin_username", "thread_id", "index"],
-        "get_saved_jobs": ["limit", "page", "next_cursor"],
-    }
-    allowed = mapping.get(tool_name, [])
-    return {k: v for k, v in tool_params.items() if k in allowed}
+    ),
+    "get_job_details": ("scrape_job", ["job_id"]),
+    "get_person_profile": (
+        "scrape_person",
+        ["linkedin_username", "sections", "max_scrolls", "connection_filter"],
+    ),
+    "get_my_profile": ("get_my_profile", ["sections", "max_scrolls"]),
+    "get_company_profile": ("scrape_company", ["company_slug", "sections"]),
+    "get_feed": ("extract_feed", ["num_posts"]),
+    "get_inbox": ("get_inbox", ["limit"]),
+    "get_conversation": (
+        "get_conversation",
+        ["linkedin_username", "thread_id", "index"],
+    ),
+}
+
+
+def _parse_job_ids(raw: str | list[str]) -> list[str]:
+    if isinstance(raw, list):
+        return raw
+    return [jid.strip() for jid in raw.split(",") if jid.strip()]
 
 
 async def _fetch_internal(
     tool_name: str, extractor: Any, tool_params: dict, ctx: Any
 ) -> dict:
-    """Call the correct scraper logic for a given tool_name.
+    """Dispatch a tool to its scraping implementation.
 
-    Uses extractor methods where available, otherwise does direct DOM access.
+    Supports extractor methods, batch job scraping, and DOM-based kernels.
     """
-    from linkedin_mcp_server.tools._common import goto_and_check
+    page = extractor.page
 
-    # Tools that map directly to extractor methods
-    extractor_methods: dict[str, tuple[str, dict]] = {
-        "search_jobs": ("search_jobs", _build_extractor_params(tool_name, tool_params)),
-        "get_job_details": (
-            "scrape_job",
-            _build_extractor_params(tool_name, tool_params),
-        ),
-        "get_person_profile": (
-            "scrape_person",
-            _build_extractor_params(tool_name, tool_params),
-        ),
-        "get_my_profile": (
-            "get_my_profile",
-            _build_extractor_params(tool_name, tool_params),
-        ),
-        "get_company_profile": (
-            "scrape_company",
-            _build_extractor_params(tool_name, tool_params),
-        ),
-        "get_feed": ("extract_feed", _build_extractor_params(tool_name, tool_params)),
-        "get_inbox": ("get_inbox", _build_extractor_params(tool_name, tool_params)),
-        "get_conversation": (
-            "get_conversation",
-            _build_extractor_params(tool_name, tool_params),
-        ),
-    }
-
-    # Batch mode: get_job_details with job_ids list — parallel execution
+    # Batch job_details — parallel execution for multiple job_ids
     if tool_name == "get_job_details" and "job_ids" in tool_params:
-        job_ids = tool_params["job_ids"]
-        if isinstance(job_ids, str):
-            job_ids = [jid.strip() for jid in job_ids.split(",") if jid.strip()]
+        from linkedin_mcp_server.tools._batch_scrape import batch_scrape_jobs
 
+        job_ids = _parse_job_ids(tool_params["job_ids"])
         logger.debug("Batch job_details: fetching %d jobs in parallel", len(job_ids))
-
-        from linkedin_mcp_server.tools._job_scrape import scrape_job_on_page
-
-        context = extractor.page.context
-        semaphore = asyncio.Semaphore(10)  # max 10 concurrent pages
-
-        async def _scrape_one(jid: str) -> dict:
-            async with semaphore:
-                page = await context.new_page()
-                try:
-                    return await scrape_job_on_page(page, jid)
-                except Exception as e:
-                    logger.warning("Failed to scrape job %s: %s", jid, e)
-                    return {
-                        "url": f"https://www.linkedin.com/jobs/view/{jid}/",
-                        "sections": {},
-                        "section_errors": {"job_posting": {"error": str(e)}},
-                    }
-                finally:
-                    await page.close()
-
-        tasks = [_scrape_one(jid) for jid in job_ids]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        all_jobs: list[dict] = []
-        for jid, result in zip(job_ids, results):
-            if isinstance(result, Exception):
-                all_jobs.append(
-                    {
-                        "url": f"https://www.linkedin.com/jobs/view/{jid}/",
-                        "sections": {},
-                        "section_errors": {"job_posting": {"error": str(result)}},
-                    }
-                )
-            elif isinstance(result, dict):
-                result["job_id"] = jid
-                all_jobs.append(result)
-
+        all_jobs = await batch_scrape_jobs(page.context, job_ids)
         logger.debug(
-            "Batch job_details complete: %d jobs fetched, %d with content",
+            "Batch job_details complete: %d jobs, %d with content",
             len(all_jobs),
             sum(1 for j in all_jobs if j.get("sections")),
         )
         return {"jobs": all_jobs, "sections": {}, "url": "batch://job_details"}
 
-    if tool_name in extractor_methods:
-        method_name, params = extractor_methods[tool_name]
+    # Extractor-method tools
+    if tool_name in _EXTRACTOR_METHODS:
+        method_name, param_keys = _EXTRACTOR_METHODS[tool_name]
+        params = {k: tool_params.get(k) for k in param_keys if k in tool_params}
         method = getattr(extractor, method_name, None)
         if method is not None:
             return await method(**params)
 
-    # DOM-based tools — navigate + parse inline
-    page = extractor.page
-
+    # DOM-based tools via extracted kernels
     if tool_name == "get_saved_jobs":
-        from linkedin_mcp_server.tools._common import goto_and_check
-        from linkedin_mcp_server.tools.saved_jobs import (
-            _parse_saved_job_card_text,
-            _extract_job_id,
-        )
+        from linkedin_mcp_server.tools._saved_jobs_scrape import scrape_saved_jobs
 
-        logger.debug("Starting saved_jobs multi-page fetch")
-        max_pages = tool_params.get("max_pages")
-        all_jobs: list[dict] = []
-        seen_ids: set[str] = set()
-        page_num = 1
-        has_next = True
-
-        while has_next:
-            if max_pages and page_num > max_pages:
-                logger.debug("Reached max_pages=%d, stopping", max_pages)
-                break
-
-            # LinkedIn saved jobs displays 10 items per page
-            # Use (page_num - 1) * 10 as offset to match UI pagination
-            start = (page_num - 1) * 10
-            url = f"https://www.linkedin.com/my-items/saved-jobs/?cardType=SAVED&start={start}"
-
-            logger.debug("Navigating to saved jobs page %d: %s", page_num, url)
-            await goto_and_check(page, url)
-            await asyncio.sleep(2)
-
-            rows = page.locator("li, article, .job-card-container, [data-job-id]")
-            total_rows = await rows.count()
-            logger.debug("Page %d found %d DOM rows", page_num, total_rows)
-
-            page_jobs = []
-            for idx in range(total_rows):
-                row = rows.nth(idx)
-                anchor = row.locator("a[href*='/jobs/view/']").first
-                href = (
-                    await anchor.get_attribute("href")
-                    if await anchor.count() > 0
-                    else None
-                )
-                if href and href.startswith("/"):
-                    href = f"https://www.linkedin.com{href}"
-                if not href:
-                    continue
-
-                job_id = _extract_job_id(href)
-                if job_id and job_id in seen_ids:
-                    continue
-                if job_id:
-                    seen_ids.add(job_id)
-
-                try:
-                    text = await row.inner_text(timeout=1000)
-                except Exception:
-                    continue
-                card = _parse_saved_job_card_text(text, job_url=href)
-                if card is None:
-                    continue
-                page_jobs.append(card)
-
-            logger.debug("Page %d parsed %d new jobs", page_num, len(page_jobs))
-            all_jobs.extend(page_jobs)
-
-            # LinkedIn paginates by 10 items; check for next button in DOM
-            try:
-                next_btn = page.locator(
-                    'button:has-text("Next"), a:has-text("Next"), button[aria-label*="next"], a[aria-label*="next"]'
-                )
-                has_next = await next_btn.count() > 0
-                logger.debug("Page %d has_next button check: %s", page_num, has_next)
-            except Exception:
-                has_next = len(page_jobs) > 0
-
-            page_num += 1
-
-            # Safety: stop if no jobs returned (end of data)
-            if not page_jobs:
-                logger.debug("No more jobs, ending pagination")
-                break
-
-        logger.debug(
-            "Saved_jobs fetch complete: %d jobs across %d pages",
-            len(all_jobs),
-            page_num - 1,
-        )
-        return {
-            "jobs": all_jobs,
-            "sections": {},
-            "url": "https://www.linkedin.com/my-items/saved-jobs/?cardType=SAVED",
-            "pages_fetched": page_num - 1,
-        }
+        max_pages = tool_params.get("max_pages", 5)
+        return await scrape_saved_jobs(page, max_pages=max_pages)
 
     if tool_name == "get_job_recommendations":
-        await goto_and_check(page, "https://www.linkedin.com/jobs/")
-        await asyncio.sleep(2)
-        from linkedin_mcp_server.tools.recommendations import (
-            _RECOMMENDATION_COMPANY_SELECTORS,
-            _RECOMMENDATION_TITLE_SELECTORS,
-            _RECOMMENDATION_LOCATION_SELECTORS,
-            _RECOMMENDATION_LINK_SELECTORS,
-            _first_locator_text,
-            _first_locator_href,
-            _normalize_job_url,
-            _extract_job_id,
-            _build_job_result,
+        from linkedin_mcp_server.tools._recommendations_scrape import (
+            parse_recommendations_page,
         )
 
-        jobs: list[dict] = []
-        rows_loc = page.locator(
-            ".job-card-container, [data-job-id], article.job-card-list__container"
-        )
-        for i in range(await rows_loc.count()):
-            row = rows_loc.nth(i)
-            title = _first_locator_text(row, _RECOMMENDATION_TITLE_SELECTORS)
-            company = _first_locator_text(row, _RECOMMENDATION_COMPANY_SELECTORS)
-            location = _first_locator_text(row, _RECOMMENDATION_LOCATION_SELECTORS)
-            href = _first_locator_href(row, _RECOMMENDATION_LINK_SELECTORS)
-            job_url = _normalize_job_url(href)
-            job = _build_job_result(
-                title, company, location, _extract_job_id(job_url), job_url
-            )
-            if job:
-                jobs.append(job)
+        jobs = await parse_recommendations_page(page)
         return {"jobs": jobs, "sections": {}, "url": "https://www.linkedin.com/jobs/"}
 
     if tool_name == "get_company_people":
-        company_name = tool_params.get("company_name", "")
-        slug = company_name.strip().lower().replace(" ", "-")
-        url = f"https://www.linkedin.com/company/{slug}/people/"
-        await goto_and_check(page, url)
-        from linkedin_mcp_server.tools.people import (
-            _parse_person_card_text,
-            _normalize_profile_url,
+        from linkedin_mcp_server.tools._company_people_scrape import (
+            parse_company_people_page,
         )
 
-        people: list[dict] = []
-        rows_loc = page.locator('a[href*="/in/"], li:has(a[href*="/in/"])')
-        limit = max(1, min(int(tool_params.get("limit", 25)), 25))
-        for i in range(await rows_loc.count()):
-            if len(people) >= limit:
-                break
-            row = rows_loc.nth(i)
-            try:
-                link = row.locator('a[href*="/in/"]').first
-                if await link.count() == 0:
-                    continue
-                href = await link.get_attribute("href", timeout=300)
-                profile_url = _normalize_profile_url(href)
-                text = await row.inner_text(timeout=800)
-            except Exception:
-                continue
-            card = _parse_person_card_text(text, profile_url=profile_url)
-            if card:
-                people.append(
-                    {
-                        "name": card.name,
-                        "profile_url": card.profile_url,
-                        "headline": card.headline,
-                        "location": card.location,
-                        "connection_degree": card.connection_degree,
-                        "shared_connections": card.shared_connections,
-                    }
-                )
-        return {"people": people, "sections": {}, "url": url}
+        company_name = tool_params.get("company_name", "")
+        limit = tool_params.get("limit", 25)
+        people = await parse_company_people_page(page, company_name, limit=limit)
+        slug = company_name.strip().lower().replace(" ", "-")
+        return {
+            "people": people,
+            "sections": {},
+            "url": f"https://www.linkedin.com/company/{slug}/people/",
+        }
 
     if tool_name == "get_pending_invitations":
-        await goto_and_check(
-            page, "https://www.linkedin.com/mynetwork/invitation-manager/"
+        from linkedin_mcp_server.tools._pending_invitations_scrape import (
+            parse_pending_invitations_page,
         )
-        await asyncio.sleep(2)
-        invitations: list[dict] = []
-        rows_loc = page.locator('a[href*="/in/"]')
-        total = await rows_loc.count()
-        for i in range(min(total, 100)):
-            row = rows_loc.nth(i)
-            try:
-                text = await row.inner_text(timeout=2000)
-                lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-                name = lines[0] if lines else ""
-                headline = lines[1] if len(lines) > 1 else ""
-                href = await row.get_attribute("href")
-                if href and href.startswith("/"):
-                    href = f"https://www.linkedin.com{href}"
-                invitations.append(
-                    {
-                        "name": name,
-                        "profile_url": href,
-                        "headline": headline,
-                    }
-                )
-            except Exception:
-                continue
+
+        invitations = await parse_pending_invitations_page(page)
         return {
             "invitations": invitations,
             "sections": {},
@@ -709,17 +509,14 @@ async def _fetch_internal(
         }
 
     if tool_name == "get_company_posts":
-        company_slug = tool_params.get("company_slug", "")
-        url = f"https://www.linkedin.com/company/{company_slug}/posts/"
-        await goto_and_check(page, url)
-        try:
-            await page.wait_for_selector("main", timeout=5000)
-        except Exception:
-            pass
-        text = await page.locator("body").inner_text(timeout=3000)
-        return {"sections": {"posts": text}, "url": url}
+        from linkedin_mcp_server.tools._company_posts_scrape import (
+            scrape_company_posts_page,
+        )
 
-    # Fallback: raise
+        return await scrape_company_posts_page(
+            page, tool_params.get("company_slug", "")
+        )
+
     raise ValueError(f"Unsupported tool_name for export: {tool_name}")
 
 
@@ -771,6 +568,13 @@ def register_export_tools(
                 description="If True, re-scrape from LinkedIn. If False and cached data exists, skip the scrape.",
             ),
         ],
+        mode: Annotated[
+            Literal["replace", "append"],
+            Field(
+                default="replace",
+                description='"replace" drops and recreates the table. "append" preserves existing data and adds new rows.',
+            ),
+        ] = "replace",
         ctx: Context | None = None,
     ) -> ExportResult:
         """Export LinkedIn data directly to a local SQLite database.
@@ -779,6 +583,9 @@ def register_export_tools(
         no raw data enters the LLM context window. Supports caching: if
         ``refresh=False`` and cached data exists for the same tool/params,
         returns the cached result without hitting LinkedIn.
+
+        Use ``mode="append"`` to add rows to an existing table without
+        destroying prior data.
         """
         if tool_name not in VALID_TOOL_NAMES:
             raise ValueError(
@@ -855,7 +662,7 @@ def register_export_tools(
                 logger.debug(
                     "Creating table %s and inserting %d rows", table_name, len(rows)
                 )
-                columns = _create_table(conn, table_name, rows[0])
+                columns = _create_table(conn, table_name, rows[0], mode=mode)
                 count = _insert_rows(conn, table_name, rows)
                 logger.debug("Inserted %d rows into %s", count, table_name)
             else:

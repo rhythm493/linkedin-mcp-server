@@ -4,7 +4,6 @@ LinkedIn job scraping tools with search and detail extraction.
 Uses innerText extraction for resilient job data capture.
 """
 
-import asyncio
 import logging
 from typing import Annotated, Any
 
@@ -15,6 +14,7 @@ from linkedin_mcp_server.config.schema import DEFAULT_TOOL_TIMEOUT_SECONDS
 from linkedin_mcp_server.core.exceptions import AuthenticationError
 from linkedin_mcp_server.dependencies import get_ready_extractor, handle_auth_error
 from linkedin_mcp_server.error_handler import raise_tool_error
+from linkedin_mcp_server.tools._batch_scrape import batch_scrape_jobs
 
 logger = logging.getLogger(__name__)
 
@@ -85,44 +85,7 @@ def register_job_tools(
                     message=f"Starting batch scrape ({len(job_ids)} jobs)",
                 )
 
-                from linkedin_mcp_server.tools._job_scrape import scrape_job_on_page
-
-                context = extractor.page.context
-                semaphore = asyncio.Semaphore(10)
-
-                async def _scrape_one(jid: str) -> dict:
-                    async with semaphore:
-                        page = await context.new_page()
-                        try:
-                            return await scrape_job_on_page(page, jid)
-                        except Exception as e:
-                            logger.warning("Failed to scrape job %s: %s", jid, e)
-                            return {
-                                "url": f"https://www.linkedin.com/jobs/view/{jid}/",
-                                "sections": {},
-                                "section_errors": {"job_posting": {"error": str(e)}},
-                            }
-                        finally:
-                            await page.close()
-
-                tasks = [_scrape_one(jid) for jid in job_ids]
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-
-                all_jobs: list[dict] = []
-                for jid, result in zip(job_ids, results):
-                    if isinstance(result, Exception):
-                        all_jobs.append(
-                            {
-                                "url": f"https://www.linkedin.com/jobs/view/{jid}/",
-                                "sections": {},
-                                "section_errors": {
-                                    "job_posting": {"error": str(result)}
-                                },
-                            }
-                        )
-                    elif isinstance(result, dict):
-                        result["job_id"] = jid
-                        all_jobs.append(result)
+                all_jobs = await batch_scrape_jobs(extractor.page.context, job_ids)
 
                 logger.debug(
                     "Batch job_details complete: %d jobs, %d with content",

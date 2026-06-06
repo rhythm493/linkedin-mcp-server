@@ -15,6 +15,7 @@ from linkedin_mcp_server.core.exceptions import AuthenticationError
 from linkedin_mcp_server.dependencies import get_ready_extractor, handle_auth_error
 from linkedin_mcp_server.error_handler import raise_tool_error
 from linkedin_mcp_server.tools._batch_scrape import batch_scrape_jobs
+from linkedin_mcp_server.tools._job_scrape import scrape_job_on_page
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +116,7 @@ def register_job_tools(
                 progress=0, total=100, message="Starting job scrape"
             )
 
-            result = await extractor.scrape_job(job_id)
+            result = await scrape_job_on_page(extractor.page, job_id, check_auth=True)
 
             await ctx.report_progress(progress=100, total=100, message="Complete")
 

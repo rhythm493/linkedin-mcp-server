@@ -1745,53 +1745,6 @@ class TestScrapeCompany:
         assert "text" not in urns[0]
 
 
-class TestScrapeJob:
-    async def test_scrape_job(self, mock_page):
-        extractor = LinkedInExtractor(mock_page)
-        with patch.object(
-            extractor,
-            "extract_page",
-            new_callable=AsyncMock,
-            return_value=extracted("Job: Software Engineer"),
-        ):
-            result = await extractor.scrape_job("12345")
-
-        assert result["url"] == "https://www.linkedin.com/jobs/view/12345/"
-        assert "job_posting" in result["sections"]
-        assert "pages_visited" not in result
-        assert "sections_requested" not in result
-
-    async def test_scrape_job_omits_rate_limited_sentinel(self, mock_page):
-        extractor = LinkedInExtractor(mock_page)
-        with patch.object(
-            extractor,
-            "extract_page",
-            new_callable=AsyncMock,
-            return_value=extracted(_RATE_LIMITED_MSG),
-        ):
-            result = await extractor.scrape_job("12345")
-
-        assert result["sections"] == {}
-
-    async def test_scrape_job_omits_orphaned_references_when_text_empty(
-        self, mock_page
-    ):
-        extractor = LinkedInExtractor(mock_page)
-        with patch.object(
-            extractor,
-            "extract_page",
-            new_callable=AsyncMock,
-            return_value=extracted(
-                "",
-                [{"kind": "job", "url": "/jobs/view/12345/", "text": "Engineer"}],
-            ),
-        ):
-            result = await extractor.scrape_job("12345")
-
-        assert result["sections"] == {}
-        assert "references" not in result
-
-
 class TestSearchJobs:
     """Tests for search_jobs with job ID extraction and pagination."""
 
@@ -2681,47 +2634,7 @@ class TestActivityFeedExtraction:
 
         mock_expand.assert_awaited_once()
 
-    async def test_job_page_calls_expand_collapsible(self, mock_page):
-        """Job posting pages call expand_collapsible_sections for full description."""
-        mock_page.evaluate = AsyncMock(
-            return_value={"source": "root", "text": "text", "references": []}
-        )
-        mock_page.wait_for_function = AsyncMock()
-        extractor = LinkedInExtractor(mock_page)
-
-        with (
-            patch(
-                "linkedin_mcp_server.scraping.extractor.scroll_to_bottom",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "linkedin_mcp_server.scraping.extractor.detect_rate_limit",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "linkedin_mcp_server.scraping.extractor.handle_modal_close",
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
-            patch(
-                "linkedin_mcp_server.scraping.extractor.expand_collapsible_sections",
-                new_callable=AsyncMock,
-            ) as mock_expand,
-            patch(
-                "linkedin_mcp_server.scraping.extractor.asyncio.sleep",
-                new_callable=AsyncMock,
-            ),
-        ):
-            await extractor._extract_page_once(
-                "https://www.linkedin.com/jobs/view/123456/",
-                section_name="job_posting",
-            )
-
-        mock_expand.assert_awaited_once()
-
-    async def test_non_details_or_job_page_does_not_call_expand_collapsible(
-        self, mock_page
-    ):
+    async def test_non_details_page_does_not_call_expand_collapsible(self, mock_page):
         """Regular pages skip expand_collapsible_sections."""
         mock_page.evaluate = AsyncMock(
             return_value={"source": "root", "text": "text", "references": []}

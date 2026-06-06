@@ -4,6 +4,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from linkedin_mcp_server.core.exceptions import AuthenticationError
+from linkedin_mcp_server.tools import _job_scrape
 from linkedin_mcp_server.tools._job_scrape import scrape_job_on_page
 
 
@@ -103,3 +105,48 @@ async def test_scrape_job_expands_collapsible_sections():
 
     mock_expand.assert_awaited_once()
     assert "job_posting" in result["sections"]
+
+
+@pytest.mark.asyncio
+async def test_scrape_job_auth_barrier_raises():
+    page = MagicMock()
+    page.goto = AsyncMock()
+    page.url = "https://www.linkedin.com/login/"
+    page.title = AsyncMock(return_value="Sign in to LinkedIn")
+    with pytest.raises(AuthenticationError):
+        await scrape_job_on_page(page, "123456")
+
+
+@pytest.mark.asyncio
+async def test_scrape_job_retries_on_rate_limit():
+    page = _make_mock_page(text="Senior Engineer at Google")
+    rate_limited = _job_scrape.ExtractedSection(
+        text=_job_scrape._RATE_LIMITED_MSG, references=[]
+    )
+    content = _job_scrape.ExtractedSection(
+        text="Senior Engineer at Google", references=[]
+    )
+    with patch.object(
+        _job_scrape, "_extract_job_page", side_effect=[rate_limited, content]
+    ):
+        result = await scrape_job_on_page(page, "123456")
+    assert result["sections"]["job_posting"] == "Senior Engineer at Google"
+
+
+@pytest.mark.asyncio
+async def test_scrape_job_retry_still_fails_on_second_attempt():
+    page = _make_mock_page(text="noise")
+    rate_limited = _job_scrape.ExtractedSection(
+        text=_job_scrape._RATE_LIMITED_MSG, references=[]
+    )
+    with patch.object(_job_scrape, "_extract_job_page", return_value=rate_limited):
+        result = await scrape_job_on_page(page, "123456")
+    assert result["sections"] == {}
+
+
+@pytest.mark.asyncio
+async def test_scrape_job_no_auth_check_when_disabled():
+    page = _make_mock_page(text="")
+    result = await scrape_job_on_page(page, "123456", check_auth=False)
+    assert result["sections"] == {}
+    assert "section_errors" not in result

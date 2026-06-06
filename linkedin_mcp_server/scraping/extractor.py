@@ -302,12 +302,49 @@ _NOISE_MARKERS: list[re.Pattern[str]] = [
         r"[A-Za-z]+ \([A-Za-z]+\))",
         re.MULTILINE,
     ),
+    # Job page footer: talent recruitment section
+    re.compile(r"^Looking for talent\?$", re.MULTILINE),
+    # Job page footer: talent recruitment section
+    re.compile(r"^Put your best foot forward", re.MULTILINE),
+    # Job page footer: job alert toggle
+    re.compile(r"^Set alert for similar jobs$", re.MULTILINE),
+    re.compile(r"^This job alert is on$", re.MULTILINE),
+    # Job page footer: disclaimer section
+    re.compile(r"^Disclaimer / Policy Statements$", re.MULTILINE),
+    # Job page footer: "About the company" section — company follower info
+    re.compile(r"^Learn more {2,}", re.MULTILINE),
+    # Job page footer: "About the company" collapsible
+    re.compile(r"^Company photos$", re.MULTILINE),
 ]
 
 _NOISE_LINES: list[re.Pattern[str]] = [
     re.compile(r"^(?:Play|Pause|Playback speed|Turn fullscreen on|Fullscreen)$"),
     re.compile(r"^(?:Show captions|Close modal window|Media player modal window)$"),
     re.compile(r"^(?:Loaded:.*|Remaining time.*|Stream Type.*)$"),
+    # Job page header chrome
+    re.compile(r"^Saved$"),
+    re.compile(r"^Apply$"),
+    re.compile(r"^Use AI to assess how you fit$"),
+    re.compile(r"^Get AI-powered advice.*$"),
+    re.compile(r"^Show match details$"),
+    re.compile(r"^Tailor my resume$"),
+    re.compile(r"^Help me stand out$"),
+    re.compile(r"^I.m interested$"),
+    re.compile(r"^Promoted by .+$"),
+    re.compile(r"^Responses managed .+$"),
+    # Job page premium upsells
+    re.compile(r"^(?:Gaurav|Try Premium|Premium) .+$"),
+    re.compile(r"^Job search faster.*$"),
+    # Job page footer: talent recruitment
+    re.compile(r"^Post a job$"),
+    re.compile(r"^Show more$"),
+    re.compile(r"^Members who share.*$"),
+    re.compile(r"^On$"),
+    re.compile(r"^Off$"),
+    re.compile(r"^Hire a resume writer$"),
+    re.compile(r"^Get a resume review$"),
+    # Job page: "show more" / truncation hint (Unicode ellipsis \u2026)
+    re.compile(r"^\u2026 more$"),
 ]
 
 
@@ -1216,7 +1253,6 @@ class LinkedInExtractor:
         # panel loads asynchronously. Wait until the panel replaces the sidebar.
         # The sidebar placeholder starts with "Load more" or "More profiles for you".
         is_details = "/details/" in url
-        is_job = "/jobs/view/" in url
         if is_details:
             try:
                 await self._page.wait_for_function(
@@ -1229,8 +1265,6 @@ class LinkedInExtractor:
                 )
             except PlaywrightTimeoutError:
                 logger.debug("Detail/section content did not appear on %s", url)
-
-        if is_details or is_job:
             await expand_collapsible_sections(self._page)
 
         # Scroll to trigger lazy loading
@@ -2452,35 +2486,6 @@ class LinkedInExtractor:
                 references["employees"] = extracted.references
         elif extracted.error:
             section_errors["employees"] = extracted.error
-
-        result: dict[str, Any] = {
-            "url": url,
-            "sections": sections,
-        }
-        if references:
-            result["references"] = references
-        if section_errors:
-            result["section_errors"] = section_errors
-        return result
-
-    async def scrape_job(self, job_id: str) -> dict[str, Any]:
-        """Scrape a single job posting.
-
-        Returns:
-            {url, sections: {name: text}}
-        """
-        url = f"https://www.linkedin.com/jobs/view/{job_id}/"
-        extracted = await self.extract_page(url, section_name="job_posting")
-
-        sections: dict[str, str] = {}
-        references: dict[str, list[Reference]] = {}
-        section_errors: dict[str, dict[str, Any]] = {}
-        if extracted.text and extracted.text != _RATE_LIMITED_MSG:
-            sections["job_posting"] = extracted.text
-            if extracted.references:
-                references["job_posting"] = extracted.references
-        elif extracted.error:
-            section_errors["job_posting"] = extracted.error
 
         result: dict[str, Any] = {
             "url": url,

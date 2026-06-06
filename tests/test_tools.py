@@ -578,10 +578,16 @@ class TestJobTools:
         }
         mock_extractor = _make_mock_extractor(expected)
 
-        from linkedin_mcp_server.tools.job import register_job_tools
+        async def mock_scrape(page, jid, **kwargs):
+            return expected
+
+        import linkedin_mcp_server.tools.job as _job_mod
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(_job_mod, "scrape_job_on_page", mock_scrape)
 
         mcp = FastMCP("test")
-        register_job_tools(mcp)
+        _job_mod.register_job_tools(mcp)
 
         tool_fn = await get_tool_fn(mcp, "get_job_details")
         result = await tool_fn(
@@ -589,6 +595,8 @@ class TestJobTools:
         )
         assert "job_posting" in result["sections"]
         assert "pages_visited" not in result
+
+        monkeypatch.undo()
 
     async def test_get_job_details_batch(self, mock_context):
         """Batch get_job_details scrapes multiple jobs in parallel."""

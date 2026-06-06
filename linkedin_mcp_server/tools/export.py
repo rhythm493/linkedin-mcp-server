@@ -413,7 +413,6 @@ _EXTRACTOR_METHODS: dict[str, tuple[str, list[str]]] = {
             "sort_by",
         ],
     ),
-    "get_job_details": ("scrape_job", ["job_id"]),
     "get_person_profile": (
         "scrape_person",
         ["linkedin_username", "sections", "max_scrolls", "connection_filter"],
@@ -457,6 +456,12 @@ async def _fetch_internal(
             sum(1 for j in all_jobs if j.get("sections")),
         )
         return {"jobs": all_jobs, "sections": {}, "url": "batch://job_details"}
+
+    # Single job_details — uses the shared kernel instead of the extractor
+    if tool_name == "get_job_details" and "job_id" in tool_params:
+        from linkedin_mcp_server.tools._job_scrape import scrape_job_on_page
+
+        return await scrape_job_on_page(page, tool_params["job_id"], check_auth=True)
 
     # Extractor-method tools
     if tool_name in _EXTRACTOR_METHODS:

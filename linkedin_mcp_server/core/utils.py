@@ -56,7 +56,10 @@ async def _wait_for_challenge_resolve(page: Page) -> None:
             continue
         logger.info("Security challenge resolved by user.")
         return
-    logger.warning("Security challenge wait timed out after %d seconds.", _WAIT_FOR_CHALLENGE_RESOLVE)
+    logger.warning(
+        "Security challenge wait timed out after %d seconds.",
+        _WAIT_FOR_CHALLENGE_RESOLVE,
+    )
 
 
 def _is_headless() -> bool:

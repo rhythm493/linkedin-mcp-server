@@ -10,14 +10,80 @@ from .exceptions import RateLimitError
 
 logger = logging.getLogger(__name__)
 
+_WAIT_FOR_CHALLENGE_RESOLVE = 120  # seconds to wait for manual CAPTCHA solve
 
-async def detect_rate_limit(page: Page) -> None:
+
+async def _has_visible_captcha(page: Page) -> bool:
+    """Check if any visible CAPTCHA iframe is present on the page.
+
+    LinkedIn embeds Google reCAPTCHA Enterprise in invisible mode on
+    every page for bot detection.  That iframe is always present but
+    never visible.  A real challenge shows a visible CAPTCHA iframe
+    instead — that is what we need to detect.
+    """
+    locator = page.locator('iframe[src*="captcha"]')
+    count = await locator.count()
+    for i in range(count):
+        try:
+            if await locator.nth(i).is_visible():
+                return True
+        except PlaywrightTimeoutError:
+            continue
+    return False
+
+
+async def _wait_for_challenge_resolve(page: Page) -> None:
+    """Wait for the user to manually resolve a security challenge.
+
+    Polls the page URL and CAPTCHA iframes until the challenge is gone.
+    Used only when the browser is in non-headless mode so the user can
+    interact with the challenge page.
+    """
+    logger.warning(
+        "Security challenge detected. "
+        "Solve it in the browser window — waiting up to %d seconds.",
+        _WAIT_FOR_CHALLENGE_RESOLVE,
+    )
+    for _ in range(_WAIT_FOR_CHALLENGE_RESOLVE):
+        await asyncio.sleep(1)
+        current_url = page.url
+        if any(
+            trigger in current_url
+            for trigger in ("/checkpoint", "/authwall", "/captcha")
+        ):
+            continue
+        if await _has_visible_captcha(page):
+            continue
+        logger.info("Security challenge resolved by user.")
+        return
+    logger.warning("Security challenge wait timed out after %d seconds.", _WAIT_FOR_CHALLENGE_RESOLVE)
+
+
+def _is_headless() -> bool:
+    """Check whether the browser is in headless mode.
+
+    Returns ``True`` by default.  Delegates to ``drivers.browser._headless``
+    if it can be imported without cycling.
+    """
+    try:
+        from linkedin_mcp_server.drivers.browser import _headless as _hl
+
+        return _hl
+    except (ImportError, AttributeError):
+        return True
+
+
+async def detect_rate_limit(page: Page, headless: bool | None = None) -> None:
     """Detect if LinkedIn has rate-limited or security-challenged the session.
 
     Checks (in order):
     1. URL contains /checkpoint, /authwall, or /captcha (security challenge)
     2. CAPTCHA iframe or element is present on the page
     3. Body text contains rate-limit phrases on error-shaped pages (throttling)
+
+    When ``headless=False`` (or auto-detected as non-headless) and a challenge
+    is detected, waits for the user to solve it in the visible browser window
+    instead of raising immediately.
 
     The body-text heuristic only runs on pages without a ``<main>`` element
     and with short body text (<2000 chars), since real rate-limit pages are
@@ -27,26 +93,43 @@ async def detect_rate_limit(page: Page) -> None:
     Raises:
         RateLimitError: If any rate-limiting or security challenge is detected
     """
+    if headless is None:
+        headless = _is_headless()
+
     current_url = page.url
     if any(
         trigger in current_url for trigger in ("/checkpoint", "/authwall", "/captcha")
     ):
+        if not headless:
+            await _wait_for_challenge_resolve(page)
+            current_url = page.url
+            if any(
+                trigger in current_url
+                for trigger in ("/checkpoint", "/authwall", "/captcha")
+            ):
+                raise RateLimitError(
+                    f"LinkedIn security challenge detected. URL: {current_url}",
+                    suggested_wait_time=30,
+                )
+            return
         raise RateLimitError(
             f"LinkedIn security challenge detected. URL: {current_url}",
             suggested_wait_time=30,
         )
 
-    try:
-        captcha_iframe = page.locator('iframe[src*="captcha"]')
-        if await captcha_iframe.count() > 0:
-            raise RateLimitError(
-                "CAPTCHA challenge detected on page.",
-                suggested_wait_time=60,
-            )
-    except RateLimitError:
-        raise
-    except PlaywrightTimeoutError:
-        pass
+    if await _has_visible_captcha(page):
+        if not headless:
+            await _wait_for_challenge_resolve(page)
+            if await _has_visible_captcha(page):
+                raise RateLimitError(
+                    "CAPTCHA challenge detected on page.",
+                    suggested_wait_time=60,
+                )
+            return
+        raise RateLimitError(
+            "CAPTCHA challenge detected on page.",
+            suggested_wait_time=60,
+        )
 
     try:
         has_main = await page.locator("main").count() > 0

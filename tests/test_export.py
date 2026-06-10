@@ -2,12 +2,14 @@
 
 import os
 import sqlite3
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastmcp import FastMCP
 from fastmcp.tools import FunctionTool
 from typing import cast
+
+from linkedin_mcp_server.tools._job_cache import JobCache
 
 from linkedin_mcp_server.tools.export import (
     ExportResult,
@@ -131,6 +133,14 @@ async def _get_tool_fn(mcp: FastMCP, name: str):
     if tool is None:
         raise ValueError(f"Tool '{name}' not found")
     return cast(FunctionTool, tool).fn
+
+
+@pytest.fixture(autouse=True)
+def _auto_job_cache(tmp_path):
+    """Prevent get_job_cache from triggering config/argparse in tests."""
+    cache = JobCache(tmp_path / "job-cache.db")
+    with patch("linkedin_mcp_server.tools.export.get_job_cache", return_value=cache):
+        yield
 
 
 class TestResolveDbPath:

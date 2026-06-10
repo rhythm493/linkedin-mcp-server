@@ -12,6 +12,7 @@ from pydantic import Field
 
 from linkedin_mcp_server.config.schema import DEFAULT_TOOL_TIMEOUT_SECONDS
 from linkedin_mcp_server.core.exceptions import AuthenticationError
+from linkedin_mcp_server.tools._job_cache import get_job_cache
 from linkedin_mcp_server.dependencies import get_ready_extractor, handle_auth_error
 from linkedin_mcp_server.error_handler import raise_tool_error
 from linkedin_mcp_server.tools._batch_scrape import batch_scrape_jobs
@@ -48,6 +49,13 @@ def register_job_tools(
                 description="List of LinkedIn job IDs for batch lookup (e.g., ['4252026496', '3856789012']). Jobs are scraped in parallel.",
             ),
         ] = None,
+        refresh: Annotated[
+            bool,
+            Field(
+                default=False,
+                description="If True, bypass the job cache and re-scrape from LinkedIn.",
+            ),
+        ] = False,
         extractor: Any | None = None,
     ) -> dict[str, Any]:
         """
@@ -67,6 +75,14 @@ def register_job_tools(
             The LLM should parse the raw text to extract job details.
         """
         try:
+            if refresh:
+                job_cache = get_job_cache()
+                if job_id:
+                    job_cache.invalidate(job_id)
+                if job_ids:
+                    for jid in job_ids:
+                        job_cache.invalidate(jid)
+
             extractor = extractor or await get_ready_extractor(
                 ctx, tool_name="get_job_details"
             )

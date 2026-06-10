@@ -6,7 +6,25 @@ import pytest
 
 from linkedin_mcp_server.core.exceptions import AuthenticationError
 from linkedin_mcp_server.tools import _job_scrape
+from linkedin_mcp_server.tools._job_cache import JobCache
 from linkedin_mcp_server.tools._job_scrape import scrape_job_on_page
+
+
+CACHED_RESULT = {
+    "url": "https://www.linkedin.com/jobs/view/123456/",
+    "sections": {"job_posting": "Cached content"},
+    "job_id": "123456",
+}
+
+
+@pytest.fixture(autouse=True)
+def _auto_job_cache(tmp_path):
+    """Provide a working job cache without triggering get_config()/argparse."""
+    cache = JobCache(tmp_path / "job-cache.db")
+    with patch(
+        "linkedin_mcp_server.tools._job_scrape.get_job_cache", return_value=cache
+    ):
+        yield
 
 
 def _make_mock_page(
@@ -47,6 +65,56 @@ def _make_mock_page(
         side_effect=lambda selector: main_loc if selector == "main" else _make_loc()
     )
     return page
+
+
+@pytest.mark.asyncio
+async def test_scrape_job_cache_hit(tmp_path):
+    """Cache hit returns cached result without calling goto."""
+    cache = JobCache(tmp_path / "job-cache.db")
+    cache.set("123456", CACHED_RESULT)
+    page = _make_mock_page(text="Should not be scraped")
+
+    with patch(
+        "linkedin_mcp_server.tools._job_scrape.get_job_cache", return_value=cache
+    ):
+        result = await scrape_job_on_page(page, "123456")
+
+    assert result["url"] == CACHED_RESULT["url"]
+    assert result["sections"]["job_posting"] == "Cached content"
+    page.goto.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_scrape_job_cache_stores_result(tmp_path):
+    """Successful scrape stores the result in cache."""
+    cache = JobCache(tmp_path / "job-cache.db")
+    page = _make_mock_page(text="Senior Engineer at Google\nSan Francisco")
+
+    with patch(
+        "linkedin_mcp_server.tools._job_scrape.get_job_cache", return_value=cache
+    ):
+        await scrape_job_on_page(page, "123456")
+
+    cached = cache.get("123456")
+    assert cached is not None
+    assert (
+        cached["sections"]["job_posting"] == "Senior Engineer at Google\nSan Francisco"
+    )
+    assert cached["job_id"] == "123456"
+
+
+@pytest.mark.asyncio
+async def test_scrape_job_empty_not_cached(tmp_path):
+    """Empty scrape result is not stored in cache."""
+    cache = JobCache(tmp_path / "job-cache.db")
+    page = _make_mock_page(text="")
+
+    with patch(
+        "linkedin_mcp_server.tools._job_scrape.get_job_cache", return_value=cache
+    ):
+        await scrape_job_on_page(page, "123456")
+
+    assert cache.get("123456") is None
 
 
 @pytest.mark.asyncio

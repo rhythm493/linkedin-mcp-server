@@ -17,6 +17,7 @@ from patchright.async_api import Page, TimeoutError as PlaywrightTimeoutError
 
 from linkedin_mcp_server.core.auth import detect_auth_barrier_quick
 from linkedin_mcp_server.core.exceptions import AuthenticationError
+from linkedin_mcp_server.tools._job_cache import DEFAULT_TTL_DAYS, get_job_cache
 from linkedin_mcp_server.core.utils import (
     detect_rate_limit,
     expand_collapsible_sections,
@@ -62,6 +63,13 @@ async def scrape_job_on_page(
     Returns:
         Dict with ``url``, ``sections``, and ``section_errors`` keys.
     """
+    cached = get_job_cache().get(job_id)
+    if cached is not None:
+        logger.debug(
+            "scrape_job_on_page: cache hit for job %s, returning cached result", job_id
+        )
+        return dict(cached)
+
     url = f"https://www.linkedin.com/jobs/view/{job_id}/"
 
     for attempt in range(2):
@@ -105,6 +113,10 @@ async def scrape_job_on_page(
     result: dict[str, Any] = {"url": url, "sections": sections}
     if section_errors:
         result["section_errors"] = section_errors
+
+    if sections:
+        cached_result: dict[str, Any] = {**result, "job_id": job_id}
+        get_job_cache().set(job_id, cached_result, ttl_days=DEFAULT_TTL_DAYS)
 
     return result
 

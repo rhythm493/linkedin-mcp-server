@@ -21,6 +21,7 @@ from fastmcp import Context, FastMCP
 from pydantic import BaseModel, Field
 
 from linkedin_mcp_server.config.schema import DEFAULT_TOOL_TIMEOUT_SECONDS
+from linkedin_mcp_server.tools._job_cache import get_job_cache
 
 logger = logging.getLogger(__name__)
 
@@ -525,6 +526,90 @@ async def _fetch_internal(
     raise ValueError(f"Unsupported tool_name for export: {tool_name}")
 
 
+async def _resolve_export_job_details(
+    tool_params: dict,
+    ctx: Context,
+    *,
+    refresh: bool = False,
+) -> tuple[dict, str]:
+    """Resolve ``get_job_details`` for export, using the job cache when possible.
+
+    Handles single and batch modes. For batches with a partial cache hit,
+    only the missing jobs are scraped live and results are merged.
+
+    Returns ``(result_dict, source_label)`` where *source_label* is
+    ``"cache"`` when all data came from the job cache (no browser needed),
+    or ``"linkedin"`` when any jobs required live scraping.
+    """
+    job_cache = get_job_cache()
+
+    if refresh:
+        if "job_id" in tool_params:
+            job_cache.invalidate(tool_params["job_id"])
+        elif "job_ids" in tool_params:
+            for jid in _parse_job_ids(tool_params["job_ids"]):
+                job_cache.invalidate(jid)
+
+    if "job_id" in tool_params:
+        jid = tool_params["job_id"]
+        if not refresh:
+            cached = job_cache.get(jid)
+            if cached is not None:
+                return dict(cached), "cache"
+        from linkedin_mcp_server.dependencies import get_ready_extractor
+
+        extractor = await get_ready_extractor(
+            ctx, tool_name="export_to_db:get_job_details"
+        )
+        result = await _fetch_internal("get_job_details", extractor, tool_params, ctx)
+        return result, "linkedin"
+
+    job_ids = _parse_job_ids(tool_params.get("job_ids", ""))
+    if not job_ids:
+        raise ValueError(
+            "Provide a non-empty list of job_ids for batch get_job_details"
+        )
+
+    cached = {} if refresh else job_cache.get_many(job_ids)
+    missing = [jid for jid in job_ids if jid not in cached]
+
+    if not missing:
+        all_jobs = [dict(cached[jid]) for jid in job_ids]
+        return (
+            {"jobs": all_jobs, "sections": {}, "url": "batch://job_details"},
+            "cache",
+        )
+
+    from linkedin_mcp_server.dependencies import get_ready_extractor
+    from linkedin_mcp_server.tools._batch_scrape import batch_scrape_jobs
+
+    extractor = await get_ready_extractor(ctx, tool_name="export_to_db:get_job_details")
+    scraped = await batch_scrape_jobs(extractor.page.context, missing)
+
+    scraped_by_id = {j.get("job_id"): j for j in scraped}
+    all_jobs: list[dict] = []
+    for jid in job_ids:
+        if jid in cached:
+            all_jobs.append(dict(cached[jid]))
+        else:
+            all_jobs.append(
+                scraped_by_id.get(
+                    jid,
+                    {
+                        "url": f"https://www.linkedin.com/jobs/view/{jid}/",
+                        "sections": {},
+                        "section_errors": {"job_posting": {"error": "Scraping failed"}},
+                        "job_id": jid,
+                    },
+                )
+            )
+
+    return (
+        {"jobs": all_jobs, "sections": {}, "url": "batch://job_details"},
+        "linkedin",
+    )
+
+
 def register_export_tools(
     mcp: FastMCP, *, tool_timeout: float = DEFAULT_TOOL_TIMEOUT_SECONDS
 ) -> None:
@@ -624,7 +709,28 @@ def register_export_tools(
                 logger.error("Context is None but cache miss requires scraping")
                 raise RuntimeError("Context required for scraping when cache miss")
 
-            # Import scraper internals
+            # ── Job-cache bypass for get_job_details ──────────────────────
+            if tool_name == "get_job_details":
+                raw_result, source = await _resolve_export_job_details(
+                    tool_params, ctx, refresh=refresh
+                )
+                normalizer = _NORMALIZERS[tool_name]
+                rows = normalizer(raw_result)
+                if rows:
+                    columns = _create_table(conn, table_name, rows[0], mode=mode)
+                    count = _insert_rows(conn, table_name, rows)
+                else:
+                    columns = []
+                    count = 0
+                _update_cache(conn, tool_name, tool_params, table_name, count)
+                return ExportResult(
+                    source=source,
+                    rows_saved=count,
+                    table=table_name,
+                    columns=columns,
+                )
+
+            # ── Standard path for all other tools ─────────────────────────
             logger.debug("Cache miss, fetching fresh data for %s", tool_name)
             from linkedin_mcp_server.dependencies import get_ready_extractor
 
@@ -634,7 +740,6 @@ def register_export_tools(
             )
             logger.debug("Extractor obtained successfully")
 
-            # Call the right scraper logic
             logger.debug(
                 "Calling _fetch_internal for %s with params: %s", tool_name, tool_params
             )
@@ -657,12 +762,10 @@ def register_export_tools(
                 list(raw_result.keys()),
             )
 
-            # Normalize to rows
             normalizer = _NORMALIZERS[tool_name]
             rows = normalizer(raw_result)
             logger.debug("Normalized %d rows for export", len(rows))
 
-            # Write to DB
             if rows:
                 logger.debug(
                     "Creating table %s and inserting %d rows", table_name, len(rows)

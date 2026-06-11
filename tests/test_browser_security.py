@@ -51,8 +51,10 @@ def test_harden_linkedin_tree_does_not_harden_unrelated_parent(tmp_path):
 )
 def test_harden_linkedin_tree_noop_outside_linkedin(tmp_path):
     """Dirs that are not inside .linkedin-mcp are left untouched."""
-    unrelated = tmp_path / "other" / "data"
-    unrelated.mkdir(parents=True, mode=0o755)
+    parent = tmp_path / "other"
+    parent.mkdir(mode=0o755)
+    unrelated = parent / "data"
+    unrelated.mkdir(mode=0o755)
 
     _harden_linkedin_tree(unrelated)
 

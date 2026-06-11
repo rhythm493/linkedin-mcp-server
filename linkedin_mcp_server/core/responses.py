@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Generic, TypeVar
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 
 T = TypeVar("T")
 
@@ -14,7 +14,7 @@ class ToolResponse(Generic[T]):
     error: str | None = None
     error_type: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
-    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     @classmethod
     def ok(cls, data: T, **metadata) -> ToolResponse[T]:

@@ -35,6 +35,7 @@ from linkedin_mcp_server.session_state import (
 )
 from linkedin_mcp_server.server import create_mcp_server
 from linkedin_mcp_server.setup import run_profile_creation
+from linkedin_mcp_server.tools._job_cache import set_default_ttl
 
 logger = logging.getLogger(__name__)
 
@@ -271,6 +272,9 @@ def main() -> None:
         log_level=config.server.log_level,
         json_format=not config.is_interactive and config.server.log_level != "DEBUG",
     )
+
+    # Apply job cache TTL from config
+    set_default_ttl(config.server.job_cache_ttl_days)
 
     version = get_version()
 

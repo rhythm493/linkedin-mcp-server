@@ -74,6 +74,7 @@ class ServerConfig:
     port: int = 8000
     path: str = "/mcp"
     tool_timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS
+    job_cache_ttl_days: int = 7
 
     def validate(self) -> None:
         """Validate server configuration values."""

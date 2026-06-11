@@ -17,7 +17,7 @@ from patchright.async_api import Page, TimeoutError as PlaywrightTimeoutError
 
 from linkedin_mcp_server.core.auth import detect_auth_barrier_quick
 from linkedin_mcp_server.core.exceptions import AuthenticationError
-from linkedin_mcp_server.tools._job_cache import DEFAULT_TTL_DAYS, get_job_cache
+from linkedin_mcp_server.tools._job_cache import get_job_cache
 from linkedin_mcp_server.core.utils import (
     detect_rate_limit,
     expand_collapsible_sections,
@@ -116,7 +116,7 @@ async def scrape_job_on_page(
 
     if sections:
         cached_result: dict[str, Any] = {**result, "job_id": job_id}
-        get_job_cache().set(job_id, cached_result, ttl_days=DEFAULT_TTL_DAYS)
+        get_job_cache().set(job_id, cached_result)
 
     return result
 

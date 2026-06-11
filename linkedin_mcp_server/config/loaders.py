@@ -64,6 +64,7 @@ class EnvironmentKeys:
     CHROME_PATH = "CHROME_PATH"
     USER_DATA_DIR = "USER_DATA_DIR"
     TOOL_TIMEOUT = "TOOL_TIMEOUT"
+    JOB_CACHE_TTL = "JOB_CACHE_TTL"
 
 
 def is_interactive_environment() -> bool:
@@ -180,6 +181,15 @@ def load_from_env(config: AppConfig) -> AppConfig:
     # Custom Chrome/Chromium executable path
     if chrome_path_env := os.environ.get(EnvironmentKeys.CHROME_PATH):
         config.browser.chrome_path = chrome_path_env
+
+    # Job cache TTL in days
+    if job_cache_ttl_env := os.environ.get(EnvironmentKeys.JOB_CACHE_TTL):
+        try:
+            config.server.job_cache_ttl_days = int(job_cache_ttl_env)
+        except ValueError:
+            raise ConfigurationError(
+                f"Invalid JOB_CACHE_TTL: '{job_cache_ttl_env}'. Must be an integer."
+            )
 
     return config
 
@@ -298,6 +308,14 @@ def load_from_args(config: AppConfig) -> AppConfig:
     )
 
     parser.add_argument(
+        "--job-cache-ttl",
+        type=positive_int,
+        default=None,
+        metavar="DAYS",
+        help="Job cache TTL in days (default: 7)",
+    )
+
+    parser.add_argument(
         "--user-data-dir",
         type=str,
         default=None,
@@ -353,6 +371,9 @@ def load_from_args(config: AppConfig) -> AppConfig:
 
     if args.chrome_path:
         config.browser.chrome_path = args.chrome_path
+
+    if args.job_cache_ttl is not None:
+        config.server.job_cache_ttl_days = args.job_cache_ttl
 
     # Session management
     if args.login:

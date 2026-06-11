@@ -17,8 +17,15 @@ from linkedin_mcp_server.config import get_config
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TTL_DAYS = 3
+DEFAULT_TTL_DAYS = 7
 _CACHE_FILENAME = "job-cache.db"
+
+_ttl_days: int = DEFAULT_TTL_DAYS  # modifiable via set_default_ttl()
+
+
+def set_default_ttl(days: int) -> None:
+    global _ttl_days
+    _ttl_days = days
 
 
 def _get_cache_path() -> Path:
@@ -92,8 +99,10 @@ class JobCache:
         return found
 
     def set(
-        self, job_id: str, result: dict[str, Any], ttl_days: int = DEFAULT_TTL_DAYS
+        self, job_id: str, result: dict[str, Any], ttl_days: int | None = None
     ) -> None:
+        if ttl_days is None:
+            ttl_days = _ttl_days
         fetched_at = _now_iso()
         expires_at = (datetime.now(timezone.utc) + timedelta(days=ttl_days)).isoformat()
         with sqlite3.connect(str(self.db_path)) as conn:

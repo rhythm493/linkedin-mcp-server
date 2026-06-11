@@ -1,14 +1,17 @@
-# LinkedIn MCP Server
+# MCP Server for LinkedIn
+
+> **Disclaimer:** This is an independent, community project. It is not affiliated with, authorized by, endorsed by, or sponsored by LinkedIn Corporation or Microsoft. "LinkedIn" is a registered trademark of LinkedIn Corporation and is used here only descriptively to identify the third-party service this software interoperates with.
 
 > **Fork** of [stickerdaniel/linkedin-mcp-server](https://github.com/stickerdaniel/linkedin-mcp-server) with extra tools from [iushv/linkedin-agent-mcp](https://github.com/iushv/linkedin-agent-mcp) (job-search-manager-mcp branch).
 
 <p align="left">
+  <a href="https://pypi.org/project/mcp-server-linkedin/" target="_blank"><img src="https://img.shields.io/pypi/v/mcp-server-linkedin?color=blue" alt="PyPI"></a>
   <a href="https://github.com/rhythm493/linkedin-mcp-server/actions/workflows/ci.yml" target="_blank"><img src="https://github.com/rhythm493/linkedin-mcp-server/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI Status"></a>
   <a href="https://github.com/rhythm493/linkedin-mcp-server/actions/workflows/release.yml" target="_blank"><img src="https://github.com/rhythm493/linkedin-mcp-server/actions/workflows/release.yml/badge.svg?branch=main" alt="Release"></a>
   <a href="https://github.com/rhythm493/linkedin-mcp-server/blob/main/LICENSE" target="_blank"><img src="https://img.shields.io/badge/License-Apache%202.0-%233fb950?labelColor=32383f" alt="License"></a>
 </p>
 
-Through this LinkedIn MCP server, AI assistants like Claude can connect to your LinkedIn. Access profiles, companies, jobs, saved jobs, posts, and more.
+An MCP server that lets AI assistants like Claude access your LinkedIn data through your own browser session. Profiles, companies, jobs, saved jobs, posts, and more.
 
 
 ## Installation Methods
@@ -94,6 +97,9 @@ uv run -m linkedin_mcp_server
 }
 ```
 
+> [!NOTE]
+> Previously published as `linkedin-scraper-mcp`. Configs using the old package name keep working through a transitional package that forwards to this one; switch to `mcp-server-linkedin` to use the new name directly.
+
 ### Setup Help
 
 <details>
@@ -168,7 +174,7 @@ parallel. Use `--log-level DEBUG` to see scraper lock wait/acquire/release logs.
 **Login issues:**
 
 - LinkedIn may require a login confirmation in the LinkedIn mobile app for `--login`
-- You might get a captcha challenge if you logged in frequently. Run `uv run -m linkedin_mcp_server --login` which opens a browser where you can solve it manually.
+- LinkedIn may show a captcha challenge during login. Run `uv run -m linkedin_mcp_server --login` which opens a browser where you can solve it manually.
 
 **Timeout issues:**
 
@@ -213,7 +219,7 @@ On startup, the MCP Bundle starts preparing the shared Patchright Chromium brows
 
 - Make sure you have only one active LinkedIn session at a time
 - LinkedIn may require a login confirmation in the LinkedIn mobile app for `--login`
-- You might get a captcha challenge if you logged in frequently. Run `uv run -m linkedin_mcp_server --login` which opens a browser where you can solve captchas manually. See the [setup guide](#-uv--git-setup-recommended).
+- LinkedIn may show a captcha challenge during login. Run `uv run -m linkedin_mcp_server --login` which opens a browser where you can solve captchas manually. See the [setup guide](#-uv--git-setup-recommended).
 
 **Timeout issues:**
 
@@ -228,7 +234,30 @@ On startup, the MCP Bundle starts preparing the shared Patchright Chromium brows
 
 ## 🐳 Docker Setup
 
-Not available for this fork — build your own image from source using the Dockerfile in the repository.
+Build your own image from source using the Dockerfile in the repository.
+
+```bash
+git clone https://github.com/rhythm493/linkedin-mcp-server
+cd linkedin-mcp-server
+docker build -t linkedin-mcp-server .
+```
+
+Then mount your browser profile:
+
+```json
+{
+  "mcpServers": {
+    "linkedin": {
+      "command": "docker",
+      "args": [
+        "run", "--rm", "-i",
+        "-v", "~/.linkedin-mcp:/home/pwuser/.linkedin-mcp",
+        "linkedin-mcp-server:latest"
+      ]
+    }
+  }
+}
+```
 
 <br/>
 <br/>
@@ -319,7 +348,7 @@ uv run -m linkedin_mcp_server --transport streamable-http --host 127.0.0.1 --por
 
 - Make sure you have only one active LinkedIn session at a time
 - LinkedIn may require a login confirmation in the LinkedIn mobile app for `--login`
-- You might get a captcha challenge if you logged in frequently. The `--login` command opens a browser where you can solve it manually.
+- LinkedIn may show a captcha challenge during login. The `--login` command opens a browser where you can solve it manually.
 
 **Scraping issues:**
 
@@ -358,16 +387,16 @@ uv run -m linkedin_mcp_server --transport streamable-http --host 127.0.0.1 --por
 > **FAQ**
 >
 > **Is this safe to use? Will I get banned?**
-> This tool controls a real browser session; it doesn't exploit undocumented APIs or bypass authentication. That said, LinkedIn's TOS prohibit automated tools. With normal usage (not bulk scraping!) you're not risking a ban. So far, no users have been banned for using this MCP. If you encounter any issues, [open an issue](https://github.com/rhythm493/linkedin-mcp-server/issues).
+> This tool controls a real browser session; it doesn't exploit undocumented APIs or bypass authentication. LinkedIn's User Agreement prohibits automated access, and accounts using automated tools can be restricted or banned. Use at your own risk; there is no guarantee of account safety. If you encounter any issues, [open an issue](https://github.com/rhythm493/linkedin-mcp-server/issues).
 >
 > **What if my agents execute too many actions?**
-> LinkedIn may send you a warning about automated tool usage. If that happens, reduce your automation volume. This MCP executes tool calls sequentially via a queue but has no built-in rate limits. Prompt your agents responsibly.
+> Tool calls run sequentially through a queue. You are responsible for the volume of automation you run; use it sparingly and prompt your agents responsibly.
 
 ## Acknowledgements
 
 Built with [FastMCP](https://gofastmcp.com/) and [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python).
 
-Use in accordance with [LinkedIn's Terms of Service](https://www.linkedin.com/legal/user-agreement). Web scraping may violate LinkedIn's terms. This tool is for personal use only.
+Use in accordance with [LinkedIn's User Agreement](https://www.linkedin.com/legal/user-agreement). Automated access may violate LinkedIn's terms and can lead to account restrictions. This tool is for personal use only and comes with no warranty of any kind.
 
 ## License
 

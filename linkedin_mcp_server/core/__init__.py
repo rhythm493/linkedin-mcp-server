@@ -6,7 +6,6 @@ from .auth import (
     is_logged_in,
     resolve_remember_me_prompt,
     wait_for_manual_login,
-    warm_up_browser,
 )
 from .browser import BrowserManager
 from .exceptions import (
@@ -57,5 +56,4 @@ __all__ = [
     "scroll_to_bottom",
     "SelectorError",
     "wait_for_manual_login",
-    "warm_up_browser",
 ]

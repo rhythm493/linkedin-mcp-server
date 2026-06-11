@@ -236,7 +236,11 @@ def get_version() -> str:
     try:
         from importlib.metadata import PackageNotFoundError, version
 
-        for package_name in ("linkedin-scraper-mcp", "linkedin-mcp-server"):
+        for package_name in (
+            "mcp-server-linkedin",
+            "linkedin-scraper-mcp",
+            "linkedin-mcp-server",
+        ):
             try:
                 return version(package_name)
             except PackageNotFoundError:

@@ -1,6 +1,5 @@
 services:
   linkedin-mcp:
-    # Not published to Docker Hub — build locally with `docker build -t linkedin-mcp-server .`
     image: linkedin-mcp-server:latest
     volumes:
       - ~/.linkedin-mcp:/home/pwuser/.linkedin-mcp

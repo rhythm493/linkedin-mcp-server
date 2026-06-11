@@ -1,4 +1,6 @@
-# LinkedIn MCP Server (Docker Build)
+# MCP Server for LinkedIn (Docker Build)
+
+> **Disclaimer:** This is an independent, community project. It is not affiliated with, authorized by, endorsed by, or sponsored by LinkedIn Corporation or Microsoft. "LinkedIn" is a registered trademark of LinkedIn Corporation and is used here only descriptively to identify the third-party service this software interoperates with.
 
 > **Note**: Docker images are not published for this fork. Build locally from source.
 
@@ -8,6 +10,7 @@ Build and run:
 git clone https://github.com/rhythm493/linkedin-mcp-server
 cd linkedin-mcp-server
 docker build -t linkedin-mcp-server .
+```
 ```
 
 Create a browser profile on the host first:

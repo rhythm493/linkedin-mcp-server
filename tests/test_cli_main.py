@@ -166,14 +166,14 @@ def test_get_version_prefers_installed_metadata(
 
     def fake_version(package_name: str) -> str:
         calls.append(package_name)
-        if package_name == "linkedin-scraper-mcp":
+        if package_name == "mcp-server-linkedin":
             return "4.2.0"
         raise importlib.metadata.PackageNotFoundError(package_name)
 
     monkeypatch.setattr(importlib.metadata, "version", fake_version)
 
     assert cli_main.get_version() == "4.2.0"
-    assert calls == ["linkedin-scraper-mcp"]
+    assert calls == ["mcp-server-linkedin"]
 
 
 def test_main_non_interactive_no_auth_still_starts_server(

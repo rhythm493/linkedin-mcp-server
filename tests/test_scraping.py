@@ -19,6 +19,7 @@ from linkedin_mcp_server.scraping.extractor import (
     _RATE_LIMITED_MSG,
     _build_feed_references,
     _truncate_linkedin_noise,
+    strip_conversation_chrome,
     strip_linkedin_noise,
 )
 from linkedin_mcp_server.scraping.link_metadata import Reference
@@ -1072,6 +1073,149 @@ class TestConnectWithPerson:
 
         assert result["status"] == "send_failed"
 
+    async def test_premium_upsell_message_reads_linkedin_dialog_text(self, mock_page):
+        """Premium upsell detection returns LinkedIn's raw dialog text."""
+        extractor = LinkedInExtractor(mock_page)
+        premium_link = MagicMock()
+        premium_link.wait_for = AsyncMock(return_value=None)
+        premium_link.is_visible = AsyncMock(return_value=True)
+        premium_link.inner_text = AsyncMock(return_value="fallback")
+        premium_link.first = premium_link
+        mock_page.locator.return_value = premium_link
+        mock_page.evaluate = AsyncMock(
+            return_value="Wysyłaj nieograniczoną liczbę spersonalizowanych zaproszeń dzięki Premium"
+        )
+
+        result = await extractor._get_premium_upsell_message(timeout=1234)
+
+        assert (
+            result
+            == "Wysyłaj nieograniczoną liczbę spersonalizowanych zaproszeń dzięki Premium"
+        )
+        mock_page.locator.assert_called_once_with(
+            'dialog[open] a[href*="/premium/"], [role="dialog"] a[href*="/premium/"]'
+        )
+        premium_link.wait_for.assert_awaited_once_with(state="visible", timeout=1234)
+
+    async def test_submit_invite_dialog_reports_premium_after_add_note(self, mock_page):
+        """Add-note Premium upsell is a note-limit block, not no-dialog."""
+        from patchright.async_api import TimeoutError as PlaywrightTimeoutError
+
+        extractor = LinkedInExtractor(mock_page)
+        textarea = MagicMock()
+        textarea.count = AsyncMock(return_value=0)
+        add_note_button = MagicMock()
+        add_note_button.click = AsyncMock(return_value=None)
+        buttons = MagicMock()
+        buttons.count = AsyncMock(return_value=3)
+        buttons.nth.return_value = add_note_button
+
+        def locator_for(selector: str):
+            return textarea if "textarea" in selector else buttons
+
+        mock_page.locator.side_effect = locator_for
+        mock_page.wait_for_selector = AsyncMock(
+            side_effect=PlaywrightTimeoutError("textarea timeout")
+        )
+
+        with (
+            patch.object(
+                extractor, "_dialog_is_open", new_callable=AsyncMock, return_value=True
+            ),
+            patch.object(
+                extractor,
+                "_get_premium_upsell_message",
+                new_callable=AsyncMock,
+                return_value="Wysyłaj nieograniczoną liczbę spersonalizowanych zaproszeń dzięki Premium",
+            ) as mock_message,
+            patch.object(
+                extractor, "_dismiss_dialog", new_callable=AsyncMock
+            ) as mock_dismiss,
+        ):
+            result = await extractor._submit_invite_dialog("Hello")
+
+        assert result == (
+            False,
+            False,
+            "Wysyłaj nieograniczoną liczbę spersonalizowanych zaproszeń dzięki Premium",
+        )
+        add_note_button.click.assert_awaited_once()
+        mock_message.assert_awaited_once()
+        mock_dismiss.assert_awaited_once()
+
+    async def test_submit_invite_dialog_reports_premium_after_send_click_failure(
+        self, mock_page
+    ):
+        """Premium upsell intercepting the Send click is a note-limit block.
+
+        When LinkedIn swaps the invite dialog for the Premium upsell at the
+        moment of submit, the original primary button is detached or pointer-
+        event covered, so ``_click_dialog_primary_button`` and the keyboard
+        fallback both fail. Without the post-click upsell probe the caller
+        would dismiss the dialog and report ``connect_unavailable`` even
+        though LinkedIn's raw quota message is sitting in the visible modal.
+        """
+        extractor = LinkedInExtractor(mock_page)
+
+        # Textarea already exposed so the reveal/fill branch succeeds and the
+        # test focuses on the post-submit failure path.
+        textarea = MagicMock()
+        textarea.count = AsyncMock(return_value=1)
+        textarea.first = textarea
+        textarea.fill = AsyncMock()
+
+        buttons = MagicMock()
+        buttons.count = AsyncMock(return_value=2)
+        primary_button = MagicMock()
+        primary_button.focus = AsyncMock()
+        buttons.nth.return_value = primary_button
+
+        def locator_for(selector: str):
+            return textarea if "textarea" in selector else buttons
+
+        mock_page.locator.side_effect = locator_for
+        mock_page.keyboard = MagicMock()
+        mock_page.keyboard.press = AsyncMock()
+
+        message = "You're out of free custom notes. Bypass the limit with Premium..."
+
+        with (
+            patch.object(
+                extractor,
+                "_dialog_is_open",
+                new_callable=AsyncMock,
+                # First call: dialog open at entry. Second call: still open
+                # after the keyboard fallback, so sent remains False.
+                side_effect=[True, True],
+            ),
+            patch.object(
+                extractor,
+                "_fill_dialog_textarea",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch.object(
+                extractor,
+                "_click_dialog_primary_button",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch.object(
+                extractor,
+                "_get_premium_upsell_message",
+                new_callable=AsyncMock,
+                return_value=message,
+            ) as mock_message,
+            patch.object(
+                extractor, "_dismiss_dialog", new_callable=AsyncMock
+            ) as mock_dismiss,
+        ):
+            result = await extractor._submit_invite_dialog("Hello")
+
+        assert result == (False, False, message)
+        mock_message.assert_awaited_once()
+        mock_dismiss.assert_awaited_once()
+
     async def test_connectable_no_dialog_returns_connect_unavailable(self, mock_page):
         """Deeplink opened but no dialog appeared → connect_unavailable."""
         extractor = LinkedInExtractor(mock_page)
@@ -1231,6 +1375,55 @@ class TestConnectWithPerson:
         mock_open_more.assert_awaited_once()
         # Critical: deeplink must NOT fire and dialog must NOT be submitted.
         mock_nav.assert_not_awaited()
+        mock_submit.assert_not_awaited()
+
+    async def test_follow_only_with_note_reports_note_limit_from_deeplink_probe(
+        self, mock_page
+    ):
+        """A requested note may reveal Premium quota without submitting."""
+        extractor = LinkedInExtractor(mock_page)
+        text = "Public Figure\n\n· 3rd+\n\nCEO\n\nFollow\nMessage\nMore\n"
+
+        with (
+            patch.object(extractor, "scrape_person", self._mock_scrape(text)),
+            patch.object(
+                extractor,
+                "_read_action_signals",
+                new_callable=AsyncMock,
+                side_effect=[
+                    self._signals(compose=True, labeled_action=True),
+                    self._signals(compose=True, labeled_action=True),
+                ],
+            ),
+            patch.object(
+                extractor,
+                "_open_more_menu",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch.object(
+                extractor, "_navigate_to_page", new_callable=AsyncMock
+            ) as mock_nav,
+            patch.object(
+                extractor,
+                "_probe_invite_note_limit",
+                new_callable=AsyncMock,
+                return_value="Wysyłaj nieograniczoną liczbę spersonalizowanych zaproszeń dzięki Premium",
+            ) as mock_probe,
+            patch.object(
+                extractor, "_submit_invite_dialog", new_callable=AsyncMock
+            ) as mock_submit,
+        ):
+            result = await extractor.connect_with_person("testuser", note="Hello")
+
+        assert result["status"] == "custom_note_limit_reached"
+        assert (
+            result["message"]
+            == "Wysyłaj nieograniczoną liczbę spersonalizowanych zaproszeń dzięki Premium"
+        )
+        assert result["note_sent"] is False
+        mock_nav.assert_awaited_once()
+        mock_probe.assert_awaited_once()
         mock_submit.assert_not_awaited()
 
     async def test_more_menu_unavailable_does_not_send(self, mock_page):
@@ -1451,15 +1644,26 @@ class TestConnectWithPerson:
         mock_page.keyboard = MagicMock()
         mock_page.keyboard.press = AsyncMock()
 
-        with patch.object(
-            extractor, "_dialog_is_open", new_callable=AsyncMock, return_value=True
+        with (
+            patch.object(
+                extractor, "_dialog_is_open", new_callable=AsyncMock, return_value=True
+            ),
+            patch.object(
+                extractor,
+                "_get_premium_upsell_message",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
         ):
-            submitted, note_sent = await extractor._submit_invite_dialog(
-                "Hi from a test"
-            )
+            (
+                submitted,
+                note_sent,
+                note_limit_message,
+            ) = await extractor._submit_invite_dialog("Hi from a test")
 
         assert submitted is True
         assert note_sent is True
+        assert note_limit_message is None
         # Clicked "Add a note" (index 0) to reveal the textarea, then the
         # primary button (index 1) to send.
         assert clicks == [0, 1]
@@ -2408,6 +2612,137 @@ class TestStripLinkedInNoise:
             "Close modal window"
         )
         assert strip_linkedin_noise(text) == "Feed post number 1\nActual post content"
+
+
+class TestStripConversationChrome:
+    THREAD = (
+        "MAY 25\n"
+        "Grace Hopper sent the following message at 5:27 PM\n"
+        "Grace Hopper  5:27 PM\n"
+        "\n"
+        "Hello!"
+    )
+    PAGE = (
+        "Messaging\n"
+        "Search messages\n"
+        "Compose a new message\n"
+        "Inbox\n"
+        "Attention screen reader users, messaging items continuously update.\n"
+        "Ada Lovelace\n"
+        "Jun 8\n"
+        "Ada: Preview belonging to a different conversation\n"
+        ". Press return to go to conversation details\n"
+        "Open the options list in your conversation with Ada Lovelace and Grace Hopper\n"
+        "Status is reachable\n"
+        "Load more conversations\n"
+        "Grace Hopper\n"
+        "Status is online\n"
+        "Open the options list in your conversation with Grace Hopper and Ada Lovelace\n"
+        + THREAD
+        + "\n"
+        "Maximize compose field\n"
+        "Attach an image to your conversation with Grace Hopper\n"
+        "Open GIF Keyboard\n"
+        "Send\n"
+        "Open send options"
+    )
+
+    def test_strips_sidebar_and_composer(self):
+        assert strip_conversation_chrome(self.PAGE) == self.THREAD
+
+    def test_other_conversation_previews_removed(self):
+        assert "different conversation" not in strip_conversation_chrome(self.PAGE)
+        assert "Ada Lovelace" not in strip_conversation_chrome(self.PAGE)
+
+    def test_missing_composer_strips_only_leading_chrome(self):
+        text = (
+            "Open the options list in your conversation with Grace Hopper and Ada Lovelace\n"
+            + self.THREAD
+        )
+        assert strip_conversation_chrome(text) == self.THREAD
+
+    def test_missing_thread_header_strips_only_composer(self):
+        text = self.THREAD + "\nMaximize compose field\nOpen send options"
+        assert strip_conversation_chrome(text) == self.THREAD
+
+    def test_quoted_composer_string_in_message_survives(self):
+        text = (
+            "Open the options list in your conversation with Grace Hopper and Ada Lovelace\n"
+            "Maximize compose field\n"
+            "is the label I keep seeing\n"
+            "Maximize compose field\n"
+            "Open send options"
+        )
+        assert (
+            strip_conversation_chrome(text)
+            == "Maximize compose field\nis the label I keep seeing"
+        )
+
+    def test_quoted_companion_with_suffix_does_not_confirm_composer(self):
+        text = "Hello!\nMaximize compose field\nOpen send options is what I clicked"
+        assert strip_conversation_chrome(text) == text
+
+    def test_quoted_attach_text_does_not_confirm_composer(self):
+        text = (
+            "Hello!\n"
+            "Maximize compose field\n"
+            "Attach an image to your conversation with Grace is the label I clicked"
+        )
+        assert strip_conversation_chrome(text) == text
+
+    def test_distant_companion_text_does_not_confirm_composer(self):
+        filler = "\n".join(f"message {n}" for n in range(10))
+        text = (
+            "Maximize compose field\n"
+            + filler
+            + "\nOpen send options is what I clicked"
+        )
+        assert strip_conversation_chrome(text) == text
+
+    def test_quoted_composer_without_companions_does_not_truncate(self):
+        text = (
+            "Open the options list in your conversation with Grace Hopper and Ada Lovelace\n"
+            "Hello!\n"
+            "Maximize compose field\n"
+            "is what the button says"
+        )
+        assert (
+            strip_conversation_chrome(text)
+            == "Hello!\nMaximize compose field\nis what the button says"
+        )
+
+    def test_quoted_thread_header_in_message_keeps_earlier_messages(self):
+        text = (
+            "Load more conversations\n"
+            "Grace Hopper\n"
+            "Open the options list in your conversation with Grace Hopper and Ada Lovelace\n"
+            "Hello!\n"
+            "Open the options list in your conversation with is a label I quoted\n"
+            "Bye!\n"
+            "Maximize compose field\n"
+            "Open send options"
+        )
+        assert strip_conversation_chrome(text) == (
+            "Hello!\n"
+            "Open the options list in your conversation with is a label I quoted\n"
+            "Bye!"
+        )
+
+    def test_sidebar_end_without_thread_header_still_strips_sidebar(self):
+        text = (
+            "Ada: Preview belonging to a different conversation\n"
+            "Load more conversations\n" + self.THREAD
+        )
+        assert strip_conversation_chrome(text) == self.THREAD
+
+    def test_unknown_locale_returns_unchanged(self):
+        assert strip_conversation_chrome(self.PAGE, locale="de") == self.PAGE
+
+    def test_no_markers_returns_stripped_text(self):
+        assert strip_conversation_chrome("Hello!\nHi there!") == "Hello!\nHi there!"
+
+    def test_empty_string(self):
+        assert strip_conversation_chrome("") == ""
 
 
 class TestActivityFeedExtraction:
@@ -3582,6 +3917,45 @@ class TestGetConversation:
             "https://www.linkedin.com/messaging/thread/abc123/"
         )
         assert result["sections"]["conversation"] == "Hello!\nHi there!"
+
+    async def test_strips_conversation_page_chrome(self, mock_page):
+        """get_conversation trims sidebar and composer chrome from the thread."""
+        raw = (
+            "Ada: Preview belonging to a different conversation\n"
+            "Open the options list in your conversation with Ada and Grace\n"
+            "Hello!\n"
+            "Maximize compose field\n"
+            "Open send options"
+        )
+        extractor = LinkedInExtractor(mock_page)
+        with (
+            patch.object(extractor, "_navigate_to_page", new_callable=AsyncMock),
+            patch(
+                "linkedin_mcp_server.scraping.extractor.detect_rate_limit",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "linkedin_mcp_server.scraping.extractor.handle_modal_close",
+                new_callable=AsyncMock,
+            ),
+            patch.object(extractor, "_wait_for_main_text", new_callable=AsyncMock),
+            patch.object(
+                extractor, "_scroll_main_scrollable_region", new_callable=AsyncMock
+            ),
+            patch.object(
+                extractor,
+                "_extract_root_content",
+                new_callable=AsyncMock,
+                return_value={"text": raw, "references": []},
+            ),
+            patch(
+                "linkedin_mcp_server.scraping.extractor.build_references",
+                return_value=[],
+            ),
+        ):
+            result = await extractor.get_conversation(thread_id="abc123")
+
+        assert result["sections"]["conversation"] == "Hello!"
 
     async def test_raises_when_no_identifier(self, mock_page):
         """get_conversation raises LinkedInScraperException with no args."""
